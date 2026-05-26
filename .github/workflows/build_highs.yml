@@ -96,18 +96,14 @@ jobs:
       - name: Build wheel
         run: uv build --wheel
 
-      - name: Repair wheel with delvewheel
+      - name: Retag wheel as win_amd64
+        # hatchling emits py3-none-any because the .dll is a data file, not a
+        # Python extension. Retag to cp310-cp310-win_amd64 so the wheel is
+        # installable only on the correct platform.
         run: |
-          # delvewheel renames transitive DLLs with a hash to avoid conflicts with
-          # CasADi's bundled libhighs.dll, and sets the platform tag to win_amd64.
-          # The MSYS2 MinGW64 bin directory is added so delvewheel resolves
-          # zlib1.dll and other MinGW transitive deps.
-          $msys2Bin = "C:\msys64\mingw64\bin"
-          uv run delvewheel repair `
-            --add-path "$msys2Bin" `
-            --wheel-dir dist\ `
-            dist\*.whl
-          Remove-Item dist\*-none-any.whl -ErrorAction SilentlyContinue
+          uv run python -m wheel tags `
+            --python-tag cp310 --abi-tag cp310 --platform-tag win_amd64 `
+            --remove dist\*.whl
 
       - name: Install wheel and run tests
         run: |

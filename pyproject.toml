@@ -41,7 +41,6 @@ Issues = "https://github.com/rtc-tools/rtc-tools-casadi-plugins/issues"
 dev = [
     "pytest >= 8.2.0",
     "auditwheel >= 6.1.0",
-    "delvewheel >= 1.9.0",
     "wheel >= 0.44",
 ]
 
