@@ -55,7 +55,7 @@ if [[ ! -d "${HIGHS_DIR}/include" ]]; then
     if [[ "${HIGHS_ARCHIVE}" == *.zip ]]; then
         unzip -q -o "${HIGHS_ARCHIVE_PATH}" -d "${HIGHS_DIR}"
     else
-        tar -xzf "${HIGHS_ARCHIVE_PATH}" -C "${HIGHS_DIR}" --strip-components=1
+        tar -xzf "${HIGHS_ARCHIVE_PATH}" -C "${HIGHS_DIR}"
     fi
 fi
 

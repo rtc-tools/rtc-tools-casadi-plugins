@@ -77,7 +77,9 @@ jobs:
             mingw-w64-x86_64-highs
 
       - name: Build HiGHS plugin
-        run: pwsh src/casadi_conic_highs/build_highs_plugin.ps1
+        run: |
+          .venv\Scripts\Activate.ps1
+          pwsh src/casadi_conic_highs/build_highs_plugin.ps1
 
       - name: Stage plugin artifacts
         run: |
