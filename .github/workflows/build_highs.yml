@@ -101,9 +101,10 @@ jobs:
         # Python extension. Retag to cp310-cp310-win_amd64 so the wheel is
         # installable only on the correct platform.
         run: |
+          $whl = (Get-Item dist\*.whl).FullName
           uv run python -m wheel tags `
             --python-tag cp310 --abi-tag cp310 --platform-tag win_amd64 `
-            --remove dist\*.whl
+            --remove $whl
 
       - name: Install wheel and run tests
         run: |
