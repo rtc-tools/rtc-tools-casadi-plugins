@@ -102,14 +102,10 @@ CMAKE_ARGS=(
     -B "${PLUGIN_BUILD_DIR}"
     -DHIGHS_ROOT="${HIGHS_DIR}"
     -DCASADI_SRC_DIR="${CASADI_SRC_DIR}"
+    -DCASADI_ROOT="${_casadi_root}"
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_INSTALL_PREFIX="${PLUGIN_INSTALL_DIR}"
 )
-
-# Provide CASADI_ROOT explicitly if already known; otherwise let CMake auto-detect.
-if [[ -n "${CASADI_ROOT:-}" ]]; then
-    CMAKE_ARGS+=(-DCASADI_ROOT="${CASADI_ROOT}")
-fi
 
 if [[ ! -f "${PLUGIN_BUILD_DIR}/CMakeCache.txt" ]]; then
     cmake "${CMAKE_ARGS[@]}"
