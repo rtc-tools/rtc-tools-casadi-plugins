@@ -22,6 +22,9 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --group dev
 
+      - name: Install BLAS
+        run: sudo apt-get update && sudo apt-get install -y libblas-dev
+
       - name: Build HiGHS plugin
         run: uv run bash src/casadi_conic_highs/build_highs_plugin.sh
 
@@ -71,7 +74,6 @@ jobs:
         with:
           msystem: MINGW64
           install: >-
-            mingw-w64-x86_64-git
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-gcc

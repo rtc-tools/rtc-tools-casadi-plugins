@@ -92,20 +92,17 @@ Write-Host "==> MSYS2 at $Msys2Root"
 Write-Host "==> Work dir: $WorkDir"
 
 # ---------------------------------------------------------------------------
-# Install HiGHS into MSYS2 MinGW64 if not already present
+# Install required MSYS2 MinGW64 packages
 # ---------------------------------------------------------------------------
 
-$HighsDll = Join-Path $Msys2Root "mingw64\bin\libhighs.dll"
-if (-not (Test-Path $HighsDll)) {
-    Write-Host "==> Installing mingw-w64-x86_64-highs via pacman..."
-    $env:MSYSTEM = "MINGW64"
-    & $Bash -lc "pacman -S --noconfirm mingw-w64-x86_64-highs 2>&1"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "pacman failed to install HiGHS. Check your MSYS2 installation."
-        exit 1
-    }
-} else {
-    Write-Host "==> HiGHS already installed in MSYS2 ($HighsDll)"
+# git and HiGHS are installed unconditionally with --needed so this is
+# idempotent: a no-op when already present, installs when missing.
+Write-Host "==> Installing mingw-w64-x86_64-git and mingw-w64-x86_64-highs via pacman..."
+$env:MSYSTEM = "MINGW64"
+& $Bash -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-git mingw-w64-x86_64-highs 2>&1"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "pacman failed. Check your MSYS2 installation."
+    exit 1
 }
 
 # ---------------------------------------------------------------------------
