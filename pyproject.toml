@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rtctools-highs"
-version = "0.1.0"
+version = "0.1.1"
 license = { file = "LICENSE" }
 description = "CasADi HiGHS solver plugin for RTC-Tools (pre-built binary wheel)."
 readme = "README.md"
