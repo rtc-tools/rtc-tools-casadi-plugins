@@ -51,9 +51,34 @@ jobs:
             --remove dist/*.whl
 
       - name: Repair wheel with auditwheel
+        # --exclude libcasadi.so.3.7: provided by the casadi wheel; must not be vendored.
+        # --exclude libhighs.so / libhighs.so.*: guard against a future dynamic HiGHS Linux
+        #   release (static-only today) being pre-staged and bundled unrenamed. Both the
+        #   unversioned name and versioned SONAMEs (e.g. libhighs.so.1) are excluded.
+        #   The glob form libhighs.so.* requires auditwheel >= 6.2.0 (fnmatch added in PR #508).
+        #   Currently a no-op because the build uses a static-only HiGHS release.
         run: |
-          uv run auditwheel repair --plat manylinux_2_28_x86_64 --exclude libcasadi.so.3.7 --wheel-dir dist/ dist/*.whl
+          uv run auditwheel repair --plat manylinux_2_28_x86_64 \
+            --exclude libcasadi.so.3.7 \
+            --exclude libhighs.so \
+            --exclude "libhighs.so.*" \
+            --wheel-dir dist/ dist/*.whl
           rm -f dist/*-linux_x86_64.whl
+
+      - name: Verify wheel contents
+        # Confirm no libhighs.so* ended up in the wheel (analogous to the Windows check).
+        # Currently a no-op guard; will catch a missed exclusion if HiGHS ever ships a
+        # dynamic Linux library.
+        run: |
+          whl=$(ls dist/*manylinux*.whl)
+          python3 -c "
+import sys, zipfile
+names = zipfile.ZipFile(sys.argv[1]).namelist()
+leaked = [n for n in names if '/libhighs' in n]
+if leaked:
+    sys.exit(f'ERROR: libhighs.so found in wheel (should be excluded): {leaked}')
+print('OK: no libhighs.so in wheel')
+" "$whl"
 
       - name: Install wheel and run tests
         run: |
@@ -89,22 +114,28 @@ jobs:
           pwsh src/casadi_conic_highs/build_highs_plugin.ps1
 
       - name: Stage plugin artifacts
+        # Only stage the CasADi plugin DLL. Do NOT copy libhighs.dll here —
+        # if it is already inside the wheel when delvewheel runs, delvewheel
+        # treats it as "already in wheel" and skips renaming it. The rename is
+        # critical: it isolates our libhighs from CasADi's bundled copy.
         run: |
           $pluginDir = (Get-Content ci-work\plugin-lib-path.txt -Raw).Trim()
           Copy-Item "$pluginDir\libcasadi_conic_highs*.dll" src\rtctools_highs\
-          if (Test-Path "$pluginDir\libhighs*.dll") { Copy-Item "$pluginDir\libhighs*.dll" src\rtctools_highs\ }
 
       - name: Build wheel
         run: uv build --wheel
 
       - name: Repair wheel with delvewheel
-        # delvewheel renames transitive DLLs (libhighs.dll -> libhighs-<hash>.dll)
-        # to avoid conflicts with CasADi's bundled libhighs.dll and bundles all
-        # non-system MinGW deps (including zlib1.dll). Use a separate output dir
-        # to avoid a SameFileError from --wheel-dir dist\.
+        # delvewheel finds libhighs.dll via --add-path "$pluginDir" (cmake output),
+        # renames it to libhighs-<hash>.dll to avoid collisions with CasADi's
+        # bundled copy, patches libcasadi_conic_highs.dll's import table, and
+        # injects a PATH shim into __init__.py so CasADi's LoadLibrary() finds
+        # the renamed DLL. MSYS2 bin supplies runtime deps (zlib1.dll, etc.).
+        # Use a separate output dir to avoid a SameFileError from --wheel-dir dist\.
         # Note: delvewheel does not retag; a separate wheel tags step follows.
         run: |
           $ErrorActionPreference = 'Stop'
+          $pluginDir = (Get-Content ci-work\plugin-lib-path.txt -Raw).Trim()
           $msys2Root = if ($env:MSYS2_ROOT) { $env:MSYS2_ROOT } else { "C:\msys64" }
           $msys2Bin = "$msys2Root\mingw64\bin"
           if (-not (Test-Path $msys2Bin)) {
@@ -112,6 +143,7 @@ jobs:
           }
           $whl = (Get-Item dist\*.whl).FullName
           uv run delvewheel repair `
+            --add-path "$pluginDir" `
             --add-path "$msys2Bin" `
             --wheel-dir dist\repaired\ `
             $whl
@@ -129,6 +161,26 @@ jobs:
           uv run python -m wheel tags `
             --python-tag cp310.cp311.cp312.cp313.cp314 --abi-tag none --platform-tag win_amd64 `
             --remove $whl
+
+      - name: Verify wheel contents
+        # Confirm that delvewheel renamed libhighs.dll (to libhighs-<hash>.dll) and
+        # that no un-renamed libhighs.dll is present. A regression here would ship a
+        # wheel that silently uses CasADi's bundled HiGHS instead of 1.14.0 — the LP
+        # tests would still pass, so this structural check is the only CI signal.
+        run: |
+          $whl = (Get-Item dist\*win_amd64*.whl).FullName
+          uv run python -c @"
+import sys, zipfile, pathlib
+whl = zipfile.ZipFile(sys.argv[1])
+names = whl.namelist()
+renamed = [n for n in names if pathlib.Path(n).name.startswith('libhighs-')]
+bare    = [n for n in names if pathlib.Path(n).name == 'libhighs.dll']
+if not renamed:
+    sys.exit('ERROR: libhighs-<hash>.dll not found in wheel -- delvewheel rename may have been skipped')
+if bare:
+    sys.exit(f'ERROR: un-renamed libhighs.dll found in wheel: {bare}')
+print(f'OK: libhighs renamed correctly -> {renamed}')
+"@ $whl
 
       - name: Install wheel and run tests
         run: |

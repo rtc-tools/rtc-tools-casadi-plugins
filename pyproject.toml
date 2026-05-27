@@ -40,7 +40,7 @@ Issues = "https://github.com/rtc-tools/rtc-tools-casadi-plugins/issues"
 [dependency-groups]
 dev = [
     "pytest >= 8.2.0",
-    "auditwheel >= 6.1.0",
+    "auditwheel >= 6.2.0",  # 6.2.0 added fnmatch/glob support to --exclude (PR #508)
     "delvewheel >= 1.9.0",
     "wheel >= 0.44",
 ]
