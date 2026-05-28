@@ -72,7 +72,7 @@ jobs:
 
       - name: Diagnose plugin symbols
         run: |
-          PLUGIN=$(find .venv -name "libcasadi_conic_highs.so" | head -1)
+          PLUGIN=$(find .venv -path "*rtctools_highs*" -name "libcasadi_conic_highs.so" | head -1)
           CASADI=$(find .venv -name "libcasadi.so*" -not -name "*conic*" | head -1)
           HIGHSSO=$(find .venv -path "*/casadi/libhighs*" 2>/dev/null | head -1)
           echo "=== Plugin: $PLUGIN"
