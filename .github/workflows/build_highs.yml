@@ -41,10 +41,8 @@ jobs:
         run: uv build --wheel
 
       - name: Retag wheel as native before auditwheel
-        # hatchling emits py3-none-any because the .so is a data file, not a
-        # Python extension. auditwheel requires a platform tag to deduce the
-        # architecture. Tag all Python versions supported by CasADi 3.7.2 (cp310-cp314).
-        # abi-tag none: the wheel has no CPython ABI dependency (matches CasADi's convention).
+        # hatchling emits py3-none-any (data-file .so); auditwheel needs a platform tag.
+        # abi-tag none: no CPython ABI dependency (matches CasADi's convention).
         run: |
           uv run python -m wheel tags \
             --python-tag cp310.cp311.cp312.cp313.cp314 --abi-tag none --platform-tag linux_x86_64 \
@@ -66,9 +64,7 @@ jobs:
           rm -f dist/*-linux_x86_64.whl
 
       - name: Verify wheel contents
-        # Confirm no libhighs.so* ended up in the wheel (analogous to the Windows check).
-        # Currently a no-op guard; will catch a missed exclusion if HiGHS ever ships a
-        # dynamic Linux library.
+        # Guard: no-op today (static HiGHS), catches a missed --exclude if HiGHS ever ships a .so.
         run: |
           whl=$(ls dist/*manylinux*.whl)
           leaked=$(python3 -c "import zipfile,sys; print('\n'.join(n for n in zipfile.ZipFile(sys.argv[1]).namelist() if '/libhighs' in n))" "$whl")
@@ -121,13 +117,15 @@ jobs:
         run: uv build --wheel
 
       - name: Repair wheel with delvewheel
-        # delvewheel finds libhighs.dll via --add-path "$pluginDir" (cmake output),
-        # renames it to libhighs-<hash>.dll to avoid collisions with CasADi's
-        # bundled copy, patches libcasadi_conic_highs.dll's import table, and
-        # injects a PATH shim into __init__.py so CasADi's LoadLibrary() finds
-        # the renamed DLL. MSYS2 bin supplies runtime deps (zlib1.dll, etc.).
-        # Use a separate output dir to avoid a SameFileError from --wheel-dir dist\.
-        # Note: delvewheel does not retag; a separate wheel tags step follows.
+        # --analyze-existing: libcasadi_conic_highs.dll is a data-file DLL (not .pyd),
+        # so delvewheel won't scan it unless told to. This finds libhighs.dll as an
+        # external dep, renames it to libhighs-<hash>.dll (avoids CasADi's bundled
+        # copy), patches the import table, and injects a PATH shim into __init__.py.
+        # --exclude libcasadi.dll: also a dep of the plugin; provided by the casadi
+        # wheel — must not be vendored (same rationale as --exclude libcasadi.so.3.7 on Linux).
+        # --add-path "$pluginDir": where libhighs.dll lives (cmake output).
+        # --add-path "$msys2Bin": runtime deps (zlib1.dll, etc.).
+        # Separate output dir avoids SameFileError; retag happens in the next step.
         run: |
           $ErrorActionPreference = 'Stop'
           $pluginDir = (Get-Content ci-work\plugin-lib-path.txt -Raw).Trim()
@@ -138,6 +136,8 @@ jobs:
           }
           $whl = (Get-Item dist\*.whl).FullName
           uv run delvewheel repair `
+            --analyze-existing `
+            --exclude libcasadi.dll `
             --add-path "$pluginDir" `
             --add-path "$msys2Bin" `
             --wheel-dir dist\repaired\ `
@@ -148,9 +148,8 @@ jobs:
           Remove-Item -Recurse -Force dist\repaired\
 
       - name: Retag wheel as cp310.cp311.cp312.cp313.cp314-none-win_amd64
-        # hatchling emits py3-none-any; delvewheel preserves the input filename.
-        # Tag all Python versions supported by CasADi 3.7.2 on Windows (cp310-cp314).
-        # abi-tag none: the wheel has no CPython ABI dependency (matches CasADi's convention).
+        # hatchling emits py3-none-any; delvewheel preserves that filename.
+        # abi-tag none: no CPython ABI dependency (matches CasADi's convention).
         run: |
           $whl = (Get-Item dist\*.whl).FullName
           uv run python -m wheel tags `
@@ -158,24 +157,22 @@ jobs:
             --remove $whl
 
       - name: Verify wheel contents
-        # Confirm that delvewheel renamed libhighs.dll (to libhighs-<hash>.dll) and
-        # that no un-renamed libhighs.dll is present. A regression here would ship a
-        # wheel that silently uses CasADi's bundled HiGHS instead of 1.14.0 — the LP
-        # tests would still pass, so this structural check is the only CI signal.
+        # LP tests pass with any HiGHS; this structural check is the only CI signal
+        # that delvewheel actually renamed libhighs.dll (avoids silently using CasADi's bundled copy).
         run: |
           $whl = (Get-Item dist\*win_amd64*.whl).FullName
           $names = uv run python -c "import zipfile,sys; print('\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))" $whl
-          $renamed = $names | Where-Object { [System.IO.Path]::GetFileName($_).StartsWith('libhighs-') }
-          $bare    = $names | Where-Object { [System.IO.Path]::GetFileName($_) -eq 'libhighs.dll' }
+          $renamed  = $names | Where-Object { [System.IO.Path]::GetFileName($_).StartsWith('libhighs-') }
+          $bare     = $names | Where-Object { [System.IO.Path]::GetFileName($_) -eq 'libhighs.dll' }
+          $casadi   = $names | Where-Object { [System.IO.Path]::GetFileName($_) -eq 'libcasadi.dll' }
           if (-not $renamed) { Write-Error 'libhighs-<hash>.dll not found in wheel -- delvewheel rename may have been skipped'; exit 1 }
           if ($bare)         { Write-Error "un-renamed libhighs.dll found in wheel: $bare"; exit 1 }
+          if ($casadi)       { Write-Error "libcasadi.dll must not be vendored (provided by casadi wheel): $casadi"; exit 1 }
           Write-Host "OK: libhighs renamed correctly -> $renamed"
 
       - name: Install wheel and run tests
         run: |
-          # Strip MSYS2 from PATH to simulate an end-user environment without MSYS2.
-          # This ensures the wheel is self-contained and does not rely on MSYS2 DLLs
-          # (e.g. zlib1.dll) being available on the system PATH.
+          # Strip MSYS2 from PATH to verify the wheel is self-contained (no zlib1.dll etc. leaking in).
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*msys*' -and $_ -notlike '*mingw*' }) -join ';'
           uv pip install (Get-Item dist\*win_amd64*.whl).FullName
           uv run pytest tests/ -v
