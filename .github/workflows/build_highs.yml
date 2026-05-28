@@ -70,6 +70,29 @@ jobs:
           if [ -n "$leaked" ]; then echo "ERROR: libhighs found in wheel: $leaked"; exit 1; fi
           echo "OK: no libhighs in wheel"
 
+      - name: Diagnose plugin symbols
+        run: |
+          PLUGIN=$(find .venv -name "libcasadi_conic_highs.so" | head -1)
+          CASADI=$(find .venv -name "libcasadi.so*" -not -name "*conic*" | head -1)
+          HIGHSSO=$(find .venv -path "*/casadi/libhighs*" 2>/dev/null | head -1)
+          echo "=== Plugin: $PLUGIN"
+          echo "=== libcasadi: $CASADI"
+          echo "=== bundled libhighs: $HIGHSSO"
+          echo "--- solutionStatusToString DEFINED in plugin:"
+          nm -D --defined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not defined)"
+          echo "--- solutionStatusToString UNDEFINED in plugin:"
+          nm -D --undefined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not undefined)"
+          echo "--- solutionStatusToString in libcasadi.so:"
+          [ -n "$CASADI" ] && nm -D "$CASADI" 2>&1 | grep -i solutionstatus || echo "(not present)"
+          echo "--- solutionStatusToString in bundled libhighs:"
+          [ -n "$HIGHSSO" ] && nm -D "$HIGHSSO" 2>&1 | grep -i solutionstatus || echo "(no bundled libhighs)"
+          echo "--- DT_NEEDED of plugin:"
+          readelf -d "$PLUGIN" | grep NEEDED
+          echo "--- RPATH/RUNPATH of plugin:"
+          readelf -d "$PLUGIN" | grep -E "RPATH|RUNPATH"
+          echo "--- ctypes load attempt:"
+          LD_DEBUG=libs .venv/bin/python -c "import ctypes; ctypes.CDLL('$PLUGIN')" 2>&1 | tail -20
+
       - name: Install wheel and run tests
         run: |
           # Install wheel + rtc-tools together so uv resolves them as a unit and

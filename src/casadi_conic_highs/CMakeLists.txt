@@ -173,15 +173,6 @@ if(MSVC)
 endif()
 if(NOT MSVC)
     target_compile_options(casadi_conic_highs PRIVATE -fvisibility=hidden)
-    if(UNIX AND NOT APPLE)
-        # libcasadi.so was built with HiGHS 1.10.0 symbols in its dynamic
-        # symbol table. Without this flag, libhighs.a symbols pulled into our
-        # .so remain STV_DEFAULT and the runtime linker preempts them with the
-        # older copy from libcasadi.so. --exclude-libs,ALL marks all archive
-        # symbols hidden so ld.so cannot resolve them from libcasadi.so at
-        # dlopen time — our statically-linked 1.14.0 copy wins instead.
-        target_link_options(casadi_conic_highs PRIVATE -Wl,--exclude-libs,ALL)
-    endif()
     if(MINGW)
         # Do NOT pass -static-libstdc++/-static-libgcc: the plugin must share
         # the MinGW C++ runtime with CasADi's wheel DLLs to avoid two copies
