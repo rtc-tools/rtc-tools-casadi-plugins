@@ -65,7 +65,6 @@ if [[ "${OS}" == "Linux" ]]; then
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${HIGHS_DIR}" \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DFAST_BUILD=ON \
             -DHIPO=OFF \
             -DZLIB=OFF \
             -DBUILD_CXX_EXE=OFF \

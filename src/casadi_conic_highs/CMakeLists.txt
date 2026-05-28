@@ -135,9 +135,17 @@ target_compile_definitions(casadi_conic_highs PRIVATE
     "CASADI_VERSION=${_casadi_version_int}"
 )
 
+# Non-FAST_BUILD exports 'libhighs'; FAST_BUILD exports 'highs::highs'.
+# We build with FAST_BUILD=OFF on Linux (required for cmake config install)
+# and use the prebuilt tarball on macOS/Windows (which uses highs::highs).
+if(TARGET highs::highs)
+    set(_highs_target highs::highs)
+else()
+    set(_highs_target libhighs)
+endif()
 target_link_libraries(casadi_conic_highs PRIVATE
     casadi::casadi
-    highs::highs
+    ${_highs_target}
 )
 
 set_target_properties(casadi_conic_highs PROPERTIES
