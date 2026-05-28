@@ -109,6 +109,11 @@ jobs:
           nm -D --defined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not defined)"
           echo "--- solutionStatusToString UNDEFINED in our plugin:"
           nm -D --undefined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not undefined)"
+          echo "--- all Highs:: symbols in our plugin (defined):"
+          nm -D --defined-only "$PLUGIN" 2>&1 | grep "_ZNK5Highs\|_ZN5Highs" | head -20
+          echo "--- solutionStatusToString in libhighs.a (all variants):"
+          nm ci-work/plugin-install-highs1.14.0-casadi3.7.2/lib/../../../highs-1.14.0/lib/libhighs.a 2>/dev/null | grep -i solutionstatus | head -10 || \
+          nm ci-work/highs-1.14.0/lib/libhighs.a 2>/dev/null | grep -i solutionstatus | head -10 || echo "(libhighs.a not found)"
           echo "--- solutionStatusToString in libcasadi.so:"
           [ -n "$CASADI" ] && nm -D "$CASADI" 2>&1 | grep -i solutionstatus || echo "(not present)"
           echo "--- solutionStatusToString in bundled libhighs.so.1:"
