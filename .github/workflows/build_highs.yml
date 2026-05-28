@@ -73,8 +73,13 @@ jobs:
 
       - name: Install wheel and run tests
         run: |
+          uv pip uninstall rtctools-highs
           uv pip install dist/*manylinux*.whl
-          uv run pytest tests/ -v
+          uv pip install rtc-tools
+          rtcVersion=$(uv run python -c "import rtctools; print(rtctools.__version__)")
+          git clone --depth 1 --branch "$rtcVersion" https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
+          RTCTOOLS_EXAMPLE_DIR=rtc-tools-src/examples/pumped_hydropower_system \
+            .venv/bin/python -m pytest tests/ tests/e2e/ -v
 
       - uses: actions/upload-artifact@v4
         with:
@@ -180,7 +185,7 @@ jobs:
           $rtcVersion = uv run python -c "import rtctools; print(rtctools.__version__)"
           git clone --depth 1 --branch $rtcVersion https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
           $env:RTCTOOLS_EXAMPLE_DIR = "rtc-tools-src\examples\pumped_hydropower_system"
-          uv run pytest tests/ tests/e2e/ -v
+          .venv\Scripts\python.exe -m pytest tests/ tests/e2e/ -v
 
       - uses: actions/upload-artifact@v4
         with:
