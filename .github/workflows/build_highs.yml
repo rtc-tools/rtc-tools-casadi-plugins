@@ -26,6 +26,12 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --group dev --python /opt/python/cp310-cp310/bin/python
 
+      - name: Cache HiGHS build
+        uses: actions/cache@v4
+        with:
+          path: ci-work/highs-1.14.0
+          key: highs-1.14.0-linux-${{ runner.os }}-v1
+
       - name: Build HiGHS plugin
         run: uv run bash src/casadi_conic_highs/build_highs_plugin.sh
 
@@ -72,26 +78,34 @@ jobs:
 
       - name: Diagnose plugin symbols
         run: |
-          PLUGIN=$(find .venv -path "*rtctools_highs*" -name "libcasadi_conic_highs.so" | head -1)
+          # Extract our plugin .so from the wheel for inspection (before install)
+          whl=$(ls dist/*manylinux*.whl)
+          mkdir -p /tmp/whl-inspect
+          unzip -q "$whl" -d /tmp/whl-inspect
+          PLUGIN=$(find /tmp/whl-inspect -name "libcasadi_conic_highs*.so*" | head -1)
           CASADI=$(find .venv -name "libcasadi.so*" -not -name "*conic*" | head -1)
           HIGHSSO=$(find .venv -path "*/casadi/libhighs*" 2>/dev/null | head -1)
-          echo "=== Plugin: $PLUGIN"
+          echo "=== Plugin in wheel: $PLUGIN"
           echo "=== libcasadi: $CASADI"
           echo "=== bundled libhighs: $HIGHSSO"
-          echo "--- solutionStatusToString DEFINED in plugin:"
+          echo "--- DT_NEEDED of our plugin:"
+          readelf -d "$PLUGIN" | grep NEEDED
+          echo "--- RPATH/RUNPATH of our plugin:"
+          readelf -d "$PLUGIN" | grep -E "RPATH|RUNPATH"
+          echo "--- solutionStatusToString DEFINED in our plugin:"
           nm -D --defined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not defined)"
-          echo "--- solutionStatusToString UNDEFINED in plugin:"
+          echo "--- solutionStatusToString UNDEFINED in our plugin:"
           nm -D --undefined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not undefined)"
           echo "--- solutionStatusToString in libcasadi.so:"
           [ -n "$CASADI" ] && nm -D "$CASADI" 2>&1 | grep -i solutionstatus || echo "(not present)"
-          echo "--- solutionStatusToString in bundled libhighs:"
+          echo "--- solutionStatusToString in bundled libhighs.so.1:"
           [ -n "$HIGHSSO" ] && nm -D "$HIGHSSO" 2>&1 | grep -i solutionstatus || echo "(no bundled libhighs)"
-          echo "--- DT_NEEDED of plugin:"
-          readelf -d "$PLUGIN" | grep NEEDED
-          echo "--- RPATH/RUNPATH of plugin:"
-          readelf -d "$PLUGIN" | grep -E "RPATH|RUNPATH"
-          echo "--- ctypes load attempt:"
-          LD_DEBUG=libs .venv/bin/python -c "import ctypes; ctypes.CDLL('$PLUGIN')" 2>&1 | tail -20
+          echo "--- all HiGHS .so files visible to the linker:"
+          find .venv /usr -name "libhighs*.so*" 2>/dev/null
+          echo "--- ctypes load of our plugin (with casadi's libhighs.so.1 visible):"
+          LD_LIBRARY_PATH=$(dirname "$HIGHSSO"):$LD_LIBRARY_PATH \
+            LD_DEBUG=libs python3 -c "import ctypes; ctypes.CDLL('$PLUGIN')" 2>&1 \
+            | grep -E "libhighs|solutionstatus|undefined|error|ERROR" | head -20
 
       - name: Install wheel and run tests
         run: |
