@@ -139,9 +139,7 @@ def install_and_test():
         if "msys" not in p.lower() and "mingw" not in p.lower()
     )
     venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
-    run(["uv", "pip", "uninstall", "rtctools-highs"], env=env)
-    run(["uv", "pip", "install", str(whl)], env=env)
-    run(["uv", "pip", "install", "rtc-tools"], env=env)
+    run(["uv", "pip", "install", str(whl), "rtc-tools"], env=env)
     rtc_src = ROOT / "rtc-tools-src"
     if not rtc_src.exists():
         rtc_version = subprocess.check_output(

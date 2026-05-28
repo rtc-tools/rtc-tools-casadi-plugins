@@ -73,10 +73,10 @@ jobs:
 
       - name: Install wheel and run tests
         run: |
-          uv pip uninstall rtctools-highs
-          uv pip install dist/*manylinux*.whl
-          uv pip install rtc-tools
-          rtcVersion=$(uv run python -c "import rtctools; print(rtctools.__version__)")
+          # Install wheel + rtc-tools together so uv resolves them as a unit and
+          # does not reinstate the editable install from a separate uv pip call.
+          uv pip install dist/*manylinux*.whl rtc-tools
+          rtcVersion=$(.venv/bin/python -c "import rtctools; print(rtctools.__version__)")
           git clone --depth 1 --branch "$rtcVersion" https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
           RTCTOOLS_EXAMPLE_DIR=rtc-tools-src/examples/pumped_hydropower_system \
             .venv/bin/python -m pytest tests/ tests/e2e/ -v
@@ -179,10 +179,10 @@ jobs:
         run: |
           # Strip MSYS2 from PATH to verify the wheel is self-contained (no zlib1.dll etc. leaking in).
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*msys*' -and $_ -notlike '*mingw*' }) -join ';'
-          uv pip uninstall rtctools-highs
-          uv pip install (Get-Item dist\*win_amd64*.whl).FullName
-          uv pip install rtc-tools
-          $rtcVersion = uv run python -c "import rtctools; print(rtctools.__version__)"
+          # Install wheel + rtc-tools together so uv resolves them as a unit and
+          # does not reinstate the editable install from a separate uv pip call.
+          uv pip install (Get-Item dist\*win_amd64*.whl).FullName rtc-tools
+          $rtcVersion = .venv\Scripts\python.exe -c "import rtctools; print(rtctools.__version__)"
           git clone --depth 1 --branch $rtcVersion https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
           $env:RTCTOOLS_EXAMPLE_DIR = "rtc-tools-src\examples\pumped_hydropower_system"
           .venv\Scripts\python.exe -m pytest tests/ tests/e2e/ -v
