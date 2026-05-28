@@ -48,10 +48,12 @@ foreach(var CASADI_SRC_DIR HIGHS_ROOT)
 endforeach()
 
 find_package(casadi CONFIG REQUIRED PATHS "${CASADI_ROOT}/cmake" NO_DEFAULT_PATH)
-# The HiGHS static release tarball on Linux bundles libopenblas.a and its own
-# OpenBLAS cmake config. highs-config.cmake calls find_dependency(BLAS); pre-
-# satisfy it by pointing FindBLAS at the bundled library so no system BLAS is
-# needed. On Windows the MSYS2 package was built without BLAS, so skip.
+# The macOS static release tarball bundles libopenblas.a and its own OpenBLAS
+# cmake config. highs-config.cmake calls find_dependency(BLAS); pre-satisfy it
+# by pointing FindBLAS at the bundled library so no system BLAS is needed.
+# On Linux we build HiGHS from source with HIPO=OFF so there is no OpenBLAS
+# and highs-config.cmake will not call find_dependency(BLAS) — this block is a
+# no-op in that case.  On Windows the MSYS2 package was built without BLAS.
 if(EXISTS "${HIGHS_ROOT}/lib/libopenblas.a")
     set(BLAS_LIBRARIES "${HIGHS_ROOT}/lib/libopenblas.a" CACHE FILEPATH "" FORCE)
     set(BLAS_FOUND TRUE CACHE BOOL "" FORCE)

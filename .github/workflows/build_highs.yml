@@ -16,8 +16,7 @@ jobs:
 
       - name: Install system dependencies
         # patchelf: required by auditwheel to rewrite RPATHs in the repaired wheel
-        # zlib-devel: required by HiGHS cmake config's find_dependency(ZLIB)
-        run: yum install -y patchelf zlib-devel
+        run: yum install -y patchelf
 
       - name: Install uv
         run: |

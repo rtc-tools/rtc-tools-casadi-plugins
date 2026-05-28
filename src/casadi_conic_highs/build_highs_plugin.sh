@@ -32,30 +32,73 @@ PLUGIN_INSTALL_DIR="${WORK_DIR}/plugin-install-highs${HIGHS_VERSION}-casadi${CAS
 
 OS="$(uname -s)"
 
-echo "==> Downloading HiGHS ${HIGHS_VERSION}..."
+echo "==> Preparing HiGHS ${HIGHS_VERSION}..."
 mkdir -p "${HIGHS_DIR}"
 
 if [[ "${OS}" == "Linux" ]]; then
-    HIGHS_ARCHIVE="highs-${HIGHS_VERSION}-x86_64-linux-gnu-static-apache.tar.gz"
+    # Build HiGHS from source on Linux to guarantee glibc 2.28 compatibility.
+    #
+    # The official x86_64-linux-gnu-static tarball is built with HIPO=ON, which
+    # statically links libopenblas.a.  That OpenBLAS was compiled against
+    # glibc 2.32+ and pulls in __libc_single_threaded — a symbol absent from
+    # glibc 2.28 (our manylinux_2_28 target).  Building from source with
+    # HIPO=OFF (the upstream default) produces a libhighs.a with no BLAS
+    # dependency, resolving the compatibility issue.
+    HIGHS_SRC_DIR="${WORK_DIR}/highs-src-${HIGHS_VERSION}"
+    HIGHS_BUILD_DIR="${WORK_DIR}/highs-build-${HIGHS_VERSION}"
+
+    HIGHS_SRC_ARCHIVE="highs-${HIGHS_VERSION}-source-archive.tar.gz"
+    HIGHS_SRC_ARCHIVE_PATH="${WORK_DIR}/${HIGHS_SRC_ARCHIVE}"
+    HIGHS_SRC_URL="https://github.com/ERGO-Code/HiGHS/releases/download/v${HIGHS_VERSION}/source-archive.tar.gz"
+
+    if [[ ! -f "${HIGHS_SRC_ARCHIVE_PATH}" ]]; then
+        curl -fsSL -o "${HIGHS_SRC_ARCHIVE_PATH}" "${HIGHS_SRC_URL}"
+    fi
+
+    if [[ ! -f "${HIGHS_SRC_DIR}/CMakeLists.txt" ]]; then
+        mkdir -p "${HIGHS_SRC_DIR}"
+        tar -xzf "${HIGHS_SRC_ARCHIVE_PATH}" -C "${HIGHS_SRC_DIR}" --strip-components=1
+    fi
+
+    if [[ ! -f "${HIGHS_DIR}/lib/libhighs.a" ]]; then
+        cmake -S "${HIGHS_SRC_DIR}" -B "${HIGHS_BUILD_DIR}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${HIGHS_DIR}" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DFAST_BUILD=ON \
+            -DHIPO=OFF \
+            -DZLIB=OFF \
+            -DBUILD_CXX_EXE=OFF \
+            -DBUILD_TESTING=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+        cmake --build "${HIGHS_BUILD_DIR}" --config Release --parallel
+        cmake --install "${HIGHS_BUILD_DIR}" --config Release
+    fi
 elif [[ "${OS}" == "Darwin" ]]; then
     HIGHS_ARCHIVE="highs-${HIGHS_VERSION}-arm-apple-static-apache.tar.gz"
+    HIGHS_URL="https://github.com/ERGO-Code/HiGHS/releases/download/v${HIGHS_VERSION}/${HIGHS_ARCHIVE}"
+    HIGHS_ARCHIVE_PATH="${WORK_DIR}/${HIGHS_ARCHIVE}"
+
+    if [[ ! -f "${HIGHS_ARCHIVE_PATH}" ]]; then
+        curl -fsSL -o "${HIGHS_ARCHIVE_PATH}" "${HIGHS_URL}"
+    fi
+
+    if [[ ! -d "${HIGHS_DIR}/include" ]]; then
+        tar -xzf "${HIGHS_ARCHIVE_PATH}" -C "${HIGHS_DIR}"
+    fi
 else
     # Windows (Git Bash / MSYS2)
     HIGHS_ARCHIVE="highs-${HIGHS_VERSION}-x86_64-windows-mit.zip"
-fi
+    HIGHS_URL="https://github.com/ERGO-Code/HiGHS/releases/download/v${HIGHS_VERSION}/${HIGHS_ARCHIVE}"
+    HIGHS_ARCHIVE_PATH="${WORK_DIR}/${HIGHS_ARCHIVE}"
 
-HIGHS_URL="https://github.com/ERGO-Code/HiGHS/releases/download/v${HIGHS_VERSION}/${HIGHS_ARCHIVE}"
-HIGHS_ARCHIVE_PATH="${WORK_DIR}/${HIGHS_ARCHIVE}"
+    if [[ ! -f "${HIGHS_ARCHIVE_PATH}" ]]; then
+        curl -fsSL -o "${HIGHS_ARCHIVE_PATH}" "${HIGHS_URL}"
+    fi
 
-if [[ ! -f "${HIGHS_ARCHIVE_PATH}" ]]; then
-    curl -fsSL -o "${HIGHS_ARCHIVE_PATH}" "${HIGHS_URL}"
-fi
-
-if [[ ! -d "${HIGHS_DIR}/include" ]]; then
-    if [[ "${HIGHS_ARCHIVE}" == *.zip ]]; then
+    if [[ ! -d "${HIGHS_DIR}/include" ]]; then
         unzip -q -o "${HIGHS_ARCHIVE_PATH}" -d "${HIGHS_DIR}"
-    else
-        tar -xzf "${HIGHS_ARCHIVE_PATH}" -C "${HIGHS_DIR}"
     fi
 fi
 
