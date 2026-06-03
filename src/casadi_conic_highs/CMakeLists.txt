@@ -135,13 +135,24 @@ target_compile_definitions(casadi_conic_highs PRIVATE
     "CASADI_VERSION=${_casadi_version_int}"
 )
 
+if(UNIX AND NOT APPLE)
+    # The CasADi wheel was built with the pre-GCC5 C++ ABI (_GLIBCXX_USE_CXX11_ABI=0).
+    # highs_interface.cpp calls Highs::solutionStatusToString which returns std::string;
+    # without this flag our .so defines the B5cxx11 mangling but casadi's runtime
+    # expects the old mangling (_ZNK5Highs22solutionStatusToStringEi). Match the ABI.
+    target_compile_definitions(casadi_conic_highs PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+endif()
+
 # Non-FAST_BUILD exports 'libhighs'; FAST_BUILD exports 'highs::highs'.
 # We build with FAST_BUILD=OFF on Linux (required for cmake config install)
 # and use the prebuilt tarball on macOS/Windows (which uses highs::highs).
 if(TARGET highs::highs)
     set(_highs_target highs::highs)
-else()
+elseif(TARGET libhighs)
     set(_highs_target libhighs)
+else()
+    message(FATAL_ERROR "Neither 'highs::highs' nor 'libhighs' target found. "
+        "Check HIGHS_ROOT and that the HiGHS cmake config was installed correctly.")
 endif()
 target_link_libraries(casadi_conic_highs PRIVATE
     casadi::casadi
@@ -173,6 +184,10 @@ if(MSVC)
 endif()
 if(NOT MSVC)
     target_compile_options(casadi_conic_highs PRIVATE -fvisibility=hidden)
+    if(UNIX AND NOT APPLE)
+        # Catch unresolved symbols at link time rather than at dlopen time.
+        target_link_options(casadi_conic_highs PRIVATE -Wl,--no-undefined)
+    endif()
     if(MINGW)
         # Do NOT pass -static-libstdc++/-static-libgcc: the plugin must share
         # the MinGW C++ runtime with CasADi's wheel DLLs to avoid two copies

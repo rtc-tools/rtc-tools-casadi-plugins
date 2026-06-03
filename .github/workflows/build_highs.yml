@@ -30,14 +30,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ci-work/highs-1.14.0
-          key: highs-1.14.0-linux-${{ runner.os }}-v1
+          key: highs-1.14.0-linux-${{ runner.os }}-${{ hashFiles('src/casadi_conic_highs/build_highs_plugin.sh') }}
 
       - name: Cache repaired wheel
         id: cache-wheel
         uses: actions/cache@v4
         with:
           path: dist
-          key: wheel-linux-${{ hashFiles('src/casadi_conic_highs/**', 'src/rtctools_highs/**', 'pyproject.toml') }}-highs-1.14.0-v1
+          key: wheel-linux-${{ hashFiles('src/casadi_conic_highs/**', 'src/rtctools_highs/**', 'pyproject.toml', '.github/workflows/build_highs.yml') }}-highs-1.14.0-v2
 
       - name: Build HiGHS plugin
         if: steps.cache-wheel.outputs.cache-hit != 'true'
@@ -81,49 +81,12 @@ jobs:
           rm -f dist/*-linux_x86_64.whl
 
       - name: Verify wheel contents
-        if: steps.cache-wheel.outputs.cache-hit != 'true'
         # Guard: no-op today (static HiGHS), catches a missed --exclude if HiGHS ever ships a .so.
         run: |
           whl=$(ls dist/*manylinux*.whl)
           leaked=$(python3 -c "import zipfile,sys; print('\n'.join(n for n in zipfile.ZipFile(sys.argv[1]).namelist() if '/libhighs' in n))" "$whl")
           if [ -n "$leaked" ]; then echo "ERROR: libhighs found in wheel: $leaked"; exit 1; fi
           echo "OK: no libhighs in wheel"
-
-      - name: Diagnose plugin symbols
-        run: |
-          # Extract our plugin .so from the wheel for inspection (before install)
-          whl=$(ls dist/*manylinux*.whl)
-          mkdir -p /tmp/whl-inspect
-          unzip -q "$whl" -d /tmp/whl-inspect
-          PLUGIN=$(find /tmp/whl-inspect -name "libcasadi_conic_highs*.so*" | head -1)
-          CASADI=$(find .venv -name "libcasadi.so*" -not -name "*conic*" | head -1)
-          HIGHSSO=$(find .venv -path "*/casadi/libhighs*" 2>/dev/null | head -1)
-          echo "=== Plugin in wheel: $PLUGIN"
-          echo "=== libcasadi: $CASADI"
-          echo "=== bundled libhighs: $HIGHSSO"
-          echo "--- DT_NEEDED of our plugin:"
-          readelf -d "$PLUGIN" | grep NEEDED
-          echo "--- RPATH/RUNPATH of our plugin:"
-          readelf -d "$PLUGIN" | grep -E "RPATH|RUNPATH"
-          echo "--- solutionStatusToString DEFINED in our plugin:"
-          nm -D --defined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not defined)"
-          echo "--- solutionStatusToString UNDEFINED in our plugin:"
-          nm -D --undefined-only "$PLUGIN" 2>&1 | grep -i solutionstatus || echo "(not undefined)"
-          echo "--- all Highs:: symbols in our plugin (defined):"
-          nm -D --defined-only "$PLUGIN" 2>&1 | grep "_ZNK5Highs\|_ZN5Highs" | head -20
-          echo "--- solutionStatusToString in libhighs.a (all variants):"
-          nm ci-work/plugin-install-highs1.14.0-casadi3.7.2/lib/../../../highs-1.14.0/lib/libhighs.a 2>/dev/null | grep -i solutionstatus | head -10 || \
-          nm ci-work/highs-1.14.0/lib/libhighs.a 2>/dev/null | grep -i solutionstatus | head -10 || echo "(libhighs.a not found)"
-          echo "--- solutionStatusToString in libcasadi.so:"
-          [ -n "$CASADI" ] && nm -D "$CASADI" 2>&1 | grep -i solutionstatus || echo "(not present)"
-          echo "--- solutionStatusToString in bundled libhighs.so.1:"
-          [ -n "$HIGHSSO" ] && nm -D "$HIGHSSO" 2>&1 | grep -i solutionstatus || echo "(no bundled libhighs)"
-          echo "--- all HiGHS .so files visible to the linker:"
-          find .venv /usr -name "libhighs*.so*" 2>/dev/null
-          echo "--- ctypes load of our plugin (with casadi's libhighs.so.1 visible):"
-          LD_LIBRARY_PATH=$(dirname "$HIGHSSO"):$LD_LIBRARY_PATH \
-            LD_DEBUG=libs python3 -c "import ctypes; ctypes.CDLL('$PLUGIN')" 2>&1 \
-            | grep -E "libhighs|solutionstatus|undefined|error|ERROR" | head -20
 
       - name: Install wheel and run tests
         run: |
@@ -133,7 +96,7 @@ jobs:
           rtcVersion=$(.venv/bin/python -c "import rtctools; print(rtctools.__version__)")
           git clone --depth 1 --branch "$rtcVersion" https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
           RTCTOOLS_EXAMPLE_DIR=rtc-tools-src/examples/pumped_hydropower_system \
-            .venv/bin/python -m pytest tests/ tests/e2e/ -v
+            .venv/bin/python -m pytest tests/ -v
 
       - uses: actions/upload-artifact@v4
         with:
@@ -239,7 +202,7 @@ jobs:
           $rtcVersion = .venv\Scripts\python.exe -c "import rtctools; print(rtctools.__version__)"
           git clone --depth 1 --branch $rtcVersion https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
           $env:RTCTOOLS_EXAMPLE_DIR = "rtc-tools-src\examples\pumped_hydropower_system"
-          .venv\Scripts\python.exe -m pytest tests/ tests/e2e/ -v
+          .venv\Scripts\python.exe -m pytest tests/ -v
 
       - uses: actions/upload-artifact@v4
         with:

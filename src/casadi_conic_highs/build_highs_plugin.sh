@@ -66,6 +66,7 @@ if [[ "${OS}" == "Linux" ]]; then
             -DCMAKE_INSTALL_PREFIX="${HIGHS_DIR}" \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CXX_FLAGS="-D_GLIBCXX_USE_CXX11_ABI=0" \
             -DHIPO=OFF \
             -DZLIB=OFF \
             -DBUILD_CXX_EXE=OFF \
@@ -74,6 +75,14 @@ if [[ "${OS}" == "Linux" ]]; then
             -DBUILD_SHARED_LIBS=OFF
         cmake --build "${HIGHS_BUILD_DIR}" --config Release --parallel
         cmake --install "${HIGHS_BUILD_DIR}" --config Release
+        # Verify ABI: solutionStatusToString must not have [abi:cxx11] mangling.
+        # If it does, CMAKE_CXX_FLAGS was silently dropped and the wheel will fail
+        # with "undefined symbol" when loaded alongside CasADi's old-ABI libhighs.so.1.
+        if nm "${HIGHS_DIR}/lib/libhighs.a" | c++filt | grep -q "solutionStatusToString.*\[abi:cxx11\]"; then
+            echo "ERROR: libhighs.a was built with new ABI — _GLIBCXX_USE_CXX11_ABI=0 was not applied." >&2
+            exit 1
+        fi
+        echo "==> ABI check passed: solutionStatusToString uses old ABI (no [abi:cxx11])."
     fi
 elif [[ "${OS}" == "Darwin" ]]; then
     HIGHS_ARCHIVE="highs-${HIGHS_VERSION}-arm-apple-static-apache.tar.gz"
