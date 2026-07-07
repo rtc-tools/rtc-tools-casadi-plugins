@@ -1,18 +1,104 @@
 name: Build rtctools-highs
 
 on:
-  push:
-    tags:
-      - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      highs_version:
+        description: "HiGHS version to build against (e.g. 1.15.1)"
+        required: true
+        default: "1.15.1"
+      casadi_version:
+        description: "CasADi version to build against (e.g. 3.7.2)"
+        required: true
+        default: "3.7.2"
+      release_version:
+        description: "Package release version, PEP 440 (e.g. 0.1.4). Leave empty for a test build (no tags, no publish)."
+        required: false
+      publish:
+        description: "Publish to PyPI after a successful build (still requires environment reviewer approval)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
+  resolve-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      highs_version: ${{ steps.resolve.outputs.highs_version }}
+      casadi_version: ${{ steps.resolve.outputs.casadi_version }}
+      casadi_tag: ${{ steps.resolve.outputs.casadi_tag }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+    steps:
+      - name: Resolve and validate HiGHS/CasADi versions
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HIGHS_VERSION_IN: ${{ github.event.inputs.highs_version }}
+          CASADI_VERSION_IN: ${{ github.event.inputs.casadi_version }}
+          RELEASE_VERSION_IN: ${{ github.event.inputs.release_version }}
+        run: |
+          set -euo pipefail
+          HIGHS_VERSION="${HIGHS_VERSION_IN:-1.15.1}"
+          CASADI_VERSION="${CASADI_VERSION_IN:-3.7.2}"
+          AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+
+          echo "==> Validating HiGHS tag v${HIGHS_VERSION} exists (ERGO-Code/HiGHS)..."
+          code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+            "https://api.github.com/repos/ERGO-Code/HiGHS/git/refs/tags/v${HIGHS_VERSION}")
+          if [ "$code" != "200" ]; then
+            echo "ERROR: HiGHS tag v${HIGHS_VERSION} not found (HTTP $code)." >&2
+            exit 1
+          fi
+
+          echo "==> Validating CasADi tag for ${CASADI_VERSION} exists (casadi/casadi)..."
+          code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+            "https://api.github.com/repos/casadi/casadi/git/refs/tags/${CASADI_VERSION}")
+          if [ "$code" = "200" ]; then
+            casadi_tag="${CASADI_VERSION}"
+          else
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+              "https://api.github.com/repos/casadi/casadi/git/refs/tags/v${CASADI_VERSION}")
+            if [ "$code" = "200" ]; then
+              casadi_tag="v${CASADI_VERSION}"
+            else
+              echo "ERROR: CasADi tag ${CASADI_VERSION} (or v${CASADI_VERSION}) not found." >&2
+              exit 1
+            fi
+          fi
+          echo "Resolved CasADi tag: ${casadi_tag}"
+          echo "casadi_tag=${casadi_tag}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${RELEASE_VERSION_IN:-}" ]; then
+            if ! [[ "${RELEASE_VERSION_IN}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ERROR: release_version '${RELEASE_VERSION_IN}' is not a plain X.Y.Z PEP 440 version." >&2
+              exit 1
+            fi
+            if curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/v${RELEASE_VERSION_IN}" \
+                | grep -q "^200$"; then
+              echo "ERROR: release tag v${RELEASE_VERSION_IN} already exists." >&2
+              exit 1
+            fi
+            echo "release_version=${RELEASE_VERSION_IN}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "highs_version=${HIGHS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "casadi_version=${CASADI_VERSION}" >> "$GITHUB_OUTPUT"
+
   build-linux:
+    needs: resolve-versions
     runs-on: ubuntu-latest
     container: quay.io/pypa/manylinux_2_28_x86_64
+    env:
+      HIGHS_VERSION: ${{ needs.resolve-versions.outputs.highs_version }}
+      CASADI_VERSION: ${{ needs.resolve-versions.outputs.casadi_version }}
+      SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.resolve-versions.outputs.release_version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install system dependencies
         # patchelf: required by auditwheel to rewrite RPATHs in the repaired wheel
@@ -23,25 +109,37 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Patch version pins from resolved inputs
+        # pyproject.toml's casadi== pin and __init__.py's __highs_version__ are
+        # placeholders in the repo; overwrite them here so the built wheel always
+        # reflects what resolve-versions actually validated for this run.
+        # __casadi_version__ is NOT patched: it's derived from casadi.__version__
+        # at import time, so it can never go stale.
+        run: |
+          set -euo pipefail
+          sed -i "s/casadi==[0-9][0-9.]*\"/casadi==${CASADI_VERSION}\"/" pyproject.toml
+          sed -i "s/__highs_version__ = \"[^\"]*\"/__highs_version__ = \"${HIGHS_VERSION}\"/" src/rtctools_highs/__init__.py
+          grep -E "casadi==|^__highs_version__" pyproject.toml src/rtctools_highs/__init__.py || true
+
       - name: Install Python dependencies
         run: uv sync --group dev --python /opt/python/cp310-cp310/bin/python
 
       - name: Cache HiGHS build
         uses: actions/cache@v4
         with:
-          path: ci-work/highs-1.14.0
-          key: highs-1.14.0-linux-${{ runner.os }}-${{ hashFiles('src/casadi_conic_highs/build_highs_plugin.sh') }}
+          path: ci-work/highs-${{ env.HIGHS_VERSION }}
+          key: highs-${{ env.HIGHS_VERSION }}-linux-${{ runner.os }}-${{ hashFiles('src/casadi_conic_highs/build_highs_plugin.sh') }}
 
       - name: Cache repaired wheel
         id: cache-wheel
         uses: actions/cache@v4
         with:
           path: dist
-          key: wheel-linux-${{ hashFiles('src/casadi_conic_highs/**', 'src/rtctools_highs/**', 'pyproject.toml', '.github/workflows/build_highs.yml') }}-highs-1.14.0-v2
+          key: wheel-linux-${{ hashFiles('src/casadi_conic_highs/**', 'src/rtctools_highs/**', 'pyproject.toml', '.github/workflows/build_highs.yml') }}-highs-${{ env.HIGHS_VERSION }}-casadi-${{ env.CASADI_VERSION }}-v2
 
       - name: Build HiGHS plugin
         if: steps.cache-wheel.outputs.cache-hit != 'true'
-        run: uv run bash src/casadi_conic_highs/build_highs_plugin.sh
+        run: uv run bash src/casadi_conic_highs/build_highs_plugin.sh "${HIGHS_VERSION}"
 
       - name: Stage plugin artifacts
         if: steps.cache-wheel.outputs.cache-hit != 'true'
@@ -104,7 +202,179 @@ jobs:
           path: dist/*manylinux*.whl
 
   build-windows:
+    needs: resolve-versions
+    runs-on: ubuntu-latest
+    env:
+      HIGHS_VERSION: ${{ needs.resolve-versions.outputs.highs_version }}
+      CASADI_VERSION: ${{ needs.resolve-versions.outputs.casadi_version }}
+      CASADI_TAG: ${{ needs.resolve-versions.outputs.casadi_tag }}
+      SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.resolve-versions.outputs.release_version }}
+      # Pinned by digest once validated in a real run; the `:production` tag
+      # is what this session confirmed matches CasADi's official wheel
+      # toolchain (GCC 11.2.0, verified via strings on the wheel's bundled
+      # libstdc++-6.dll / libgcc_s_seh-1.dll).
+      DOCKCROSS_IMAGE: ghcr.io/jgillis/windows-shared-x64-posix:production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Patch version pins from resolved inputs
+        run: |
+          set -euo pipefail
+          sed -i "s/casadi==[0-9][0-9.]*\"/casadi==${CASADI_VERSION}\"/" pyproject.toml
+          sed -i "s/__highs_version__ = \"[^\"]*\"/__highs_version__ = \"${HIGHS_VERSION}\"/" src/rtctools_highs/__init__.py
+
+      - name: Pull dockcross image
+        run: docker pull "${DOCKCROSS_IMAGE}"
+
+      - name: Clone HiGHS source
+        run: git clone --depth 1 --branch "v${HIGHS_VERSION}" https://github.com/ERGO-Code/HiGHS.git highs-src
+
+      - name: Clone CasADi source
+        run: git clone --depth 1 --branch "${CASADI_TAG}" https://github.com/casadi/casadi.git casadi-src
+
+      - name: Download CasADi Windows wheel (headers/cmake config/import libs only)
+        # Any cp3xx tag works: the plugin links against C++ symbols, not the
+        # Python C API. cp312 chosen arbitrarily as a stable, always-published tag.
+        run: |
+          set -euo pipefail
+          url=$(curl -sS "https://pypi.org/pypi/casadi/${CASADI_VERSION}/json" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print([u['url'] for u in d['urls'] if u['filename'].endswith('cp312-none-win_amd64.whl')][0])")
+          mkdir -p casadi-win-wheel
+          curl -sSL -o casadi-win-wheel/casadi.whl "$url"
+          python3 -m zipfile -e casadi-win-wheel/casadi.whl casadi-win-wheel/extracted
+
+      - name: Cross-compile HiGHS
+        run: |
+          set -euo pipefail
+          mkdir -p highs-src/build-dockcross
+          docker run --rm \
+            -v "$PWD/highs-src:/work" \
+            -w /work \
+            "${DOCKCROSS_IMAGE}" bash -c '
+              set -e
+              cmake -G Ninja -S . -B build-dockcross \
+                -DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DFAST_BUILD=ON -DBUILD_SHARED_LIBS=OFF -DZLIB=OFF -DHIPO=OFF \
+                -DCMAKE_INSTALL_PREFIX=/work/install-dockcross
+              ninja -C build-dockcross -j"$(nproc)"
+              ninja -C build-dockcross install
+            '
+          # NOTE: do not pre-create highs-install -- `cp -r src dst` nests src
+          # under dst if dst already exists as a directory, breaking the
+          # HIGHS_ROOT/lib/cmake/highs layout the plugin CMakeLists.txt expects.
+          cp -r highs-src/install-dockcross highs-install
+
+      - name: Cross-compile casadi_conic_highs plugin
+        run: |
+          set -euo pipefail
+          mkdir -p plugin-build plugin-install
+          docker run --rm \
+            -v "$PWD/src/casadi_conic_highs:/src:ro" \
+            -v "$PWD/highs-install:/highs:ro" \
+            -v "$PWD/casadi-win-wheel/extracted:/site-packages:ro" \
+            -v "$PWD/casadi-src:/casadi-src:ro" \
+            -v "$PWD/plugin-build:/build" \
+            -v "$PWD/plugin-install:/install" \
+            "${DOCKCROSS_IMAGE}" bash -c '
+              set -e
+              cmake -G Ninja -S /src -B /build \
+                -DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DHIGHS_ROOT=/highs \
+                -DCASADI_ROOT=/site-packages/casadi \
+                -DCASADI_SRC_DIR=/casadi-src \
+                -DCMAKE_INSTALL_PREFIX=/install
+              ninja -C /build -j"$(nproc)"
+              ninja -C /build install
+            '
+
+      - name: Verify plugin symbols against CasADi's actual runtime DLLs
+        # HiGHS is statically linked (no libhighs.dll dependency). This check
+        # confirms the dockcross toolchain's libstdc++/libgcc/libwinpthread
+        # ABI is a subset of what CasADi's bundled runtime DLLs actually export
+        # -- the same check that validated this recipe manually this session.
+        run: |
+          pip install --quiet pefile
+          python3 - <<'PY'
+          import pefile, glob, os, sys
+          plugin = "plugin-install/lib/libcasadi_conic_highs.dll"
+          runtime_dir = "casadi-win-wheel/extracted/casadi"
+          p = pefile.PE(plugin)
+          needed = {}
+          for entry in p.DIRECTORY_ENTRY_IMPORT:
+              dll = entry.dll.decode().lower()
+              needed.setdefault(dll, set()).update(
+                  imp.name.decode() for imp in entry.imports if imp.name
+              )
+          available = {os.path.basename(f).lower(): f for f in glob.glob(os.path.join(runtime_dir, "*.dll"))}
+          missing_total = 0
+          for dllname, syms in needed.items():
+              if dllname not in available:
+                  continue  # system DLL (kernel32, msvcrt, ...) -- always present
+              pe = pefile.PE(available[dllname])
+              exports = {e.name.decode() for e in getattr(pe, "DIRECTORY_ENTRY_EXPORT", pefile.PE()).symbols} \
+                  if hasattr(pe, "DIRECTORY_ENTRY_EXPORT") else set()
+              missing = syms - exports
+              if missing:
+                  print(f"MISSING in {dllname}: {sorted(missing)}")
+                  missing_total += len(missing)
+          if missing_total:
+              print(f"ERROR: {missing_total} missing symbols -- dockcross toolchain drifted from CasADi's wheel.")
+              sys.exit(1)
+          print("OK: zero missing symbols against CasADi's bundled runtime DLLs.")
+          PY
+
+      - name: Stage plugin artifact and build wheel
+        run: |
+          set -euo pipefail
+          cp plugin-install/lib/libcasadi_conic_highs.dll src/rtctools_highs/
+          pip install --quiet uv
+          uv build --wheel
+
+      - name: Retag wheel as cp310.cp311.cp312.cp313.cp314-none-win_amd64
+        run: |
+          whl=$(ls dist/*.whl)
+          uv run python -m wheel tags \
+            --python-tag cp310.cp311.cp312.cp313.cp314 --abi-tag none --platform-tag win_amd64 \
+            --remove "$whl"
+
+      - name: Verify wheel contents
+        # HiGHS is statically linked -- no libhighs.dll should ever appear.
+        # libcasadi.dll / libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll
+        # must NOT be vendored: they must stay the exact copies CasADi's own
+        # wheel loads first, or the ABI-matching guarantee from the symbol
+        # check above is void.
+        run: |
+          whl=$(ls dist/*win_amd64*.whl)
+          names=$(python3 -c "import zipfile,sys; print('\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))" "$whl")
+          for forbidden in libhighs.dll libcasadi.dll libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+            if echo "$names" | grep -qi "/${forbidden}$"; then
+              echo "ERROR: ${forbidden} must not be vendored in the wheel"; exit 1
+            fi
+          done
+          echo "OK: no forbidden runtime DLLs vendored."
+
+      - name: Note on testing this wheel
+        # Static symbol/ABI validation happens above; the test-windows job
+        # below does the real `import casadi; qpsol()` smoke test on a
+        # genuine Windows runner.
+        run: echo "Static ABI check passed. See test-windows job for a live smoke test."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-windows
+          path: dist/*win_amd64*.whl
+
+  test-windows:
+    needs: [resolve-versions, build-windows]
     runs-on: windows-latest
+    env:
+      HIGHS_VERSION: ${{ needs.resolve-versions.outputs.highs_version }}
+      CASADI_VERSION: ${{ needs.resolve-versions.outputs.casadi_version }}
     defaults:
       run:
         shell: pwsh
@@ -118,106 +388,70 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Install Python dependencies
-        run: uv sync --group dev
-
-      - name: Build HiGHS plugin
-        run: |
-          .venv\Scripts\Activate.ps1
-          pwsh src/casadi_conic_highs/build_highs_plugin.ps1
-
-      - name: Stage plugin artifacts
-        # Only stage the CasADi plugin DLL. Do NOT copy libhighs.dll here —
-        # if it is already inside the wheel when delvewheel runs, delvewheel
-        # treats it as "already in wheel" and skips renaming it. The rename is
-        # critical: it isolates our libhighs from CasADi's bundled copy.
-        run: |
-          $pluginDir = (Get-Content ci-work\plugin-lib-path.txt -Raw).Trim()
-          Copy-Item "$pluginDir\libcasadi_conic_highs*.dll" src\rtctools_highs\
-
-      - name: Build wheel
-        run: uv build --wheel
-
-      - name: Repair wheel with delvewheel
-        # --analyze-existing: libcasadi_conic_highs.dll is a data-file DLL (not .pyd),
-        # so delvewheel won't scan it unless told to. This finds libhighs.dll as an
-        # external dep, renames it to libhighs-<hash>.dll (avoids CasADi's bundled
-        # copy), and patches the import table.
-        # --exclude libcasadi.dll: also a dep of the plugin; provided by the casadi
-        # wheel — must not be vendored (same rationale as --exclude libcasadi.so.3.7 on Linux).
-        # --add-path "$pluginDir": where libhighs.dll lives (cmake output).
-        # --add-path "$msys2Bin": runtime deps (zlib1.dll, etc.).
-        # Separate output dir avoids SameFileError; retag happens in the next step.
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $pluginDir = (Get-Content ci-work\plugin-lib-path.txt -Raw).Trim()
-          $msys2Root = if ($env:MSYS2_ROOT) { $env:MSYS2_ROOT } else { "C:\msys64" }
-          $msys2Bin = "$msys2Root\mingw64\bin"
-          if (-not (Test-Path $msys2Bin)) {
-            throw "MSYS2 MinGW64 bin not found at $msys2Bin. Override with MSYS2_ROOT env var."
-          }
-          $whl = (Get-Item dist\*.whl).FullName
-          uv run delvewheel repair `
-            --analyze-existing `
-            --exclude libcasadi.dll `
-            --add-path "$pluginDir" `
-            --add-path "$msys2Bin" `
-            --wheel-dir dist\repaired\ `
-            $whl
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Remove-Item dist\*.whl
-          Move-Item dist\repaired\*.whl dist\
-          Remove-Item -Recurse -Force dist\repaired\
-
-      - name: Retag wheel as cp310.cp311.cp312.cp313.cp314-none-win_amd64
-        # hatchling emits py3-none-any; delvewheel preserves that filename.
-        # abi-tag none: no CPython ABI dependency (matches CasADi's convention).
-        run: |
-          $whl = (Get-Item dist\*.whl).FullName
-          uv run python -m wheel tags `
-            --python-tag cp310.cp311.cp312.cp313.cp314 --abi-tag none --platform-tag win_amd64 `
-            --remove $whl
-
-      - name: Verify wheel contents
-        # LP tests pass with any HiGHS; this structural check is the only CI signal
-        # that delvewheel actually renamed libhighs.dll (avoids silently using CasADi's bundled copy).
-        run: |
-          $whl = (Get-Item dist\*win_amd64*.whl).FullName
-          $names = uv run python -c "import zipfile,sys; print('\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))" $whl
-          $renamed  = $names | Where-Object { [System.IO.Path]::GetFileName($_).StartsWith('libhighs-') }
-          $bare     = $names | Where-Object { [System.IO.Path]::GetFileName($_) -eq 'libhighs.dll' }
-          $casadi   = $names | Where-Object { [System.IO.Path]::GetFileName($_) -eq 'libcasadi.dll' }
-          if (-not $renamed) { Write-Error 'libhighs-<hash>.dll not found in wheel -- delvewheel rename may have been skipped'; exit 1 }
-          if ($bare)         { Write-Error "un-renamed libhighs.dll found in wheel: $bare"; exit 1 }
-          if ($casadi)       { Write-Error "libcasadi.dll must not be vendored (provided by casadi wheel): $casadi"; exit 1 }
-          Write-Host "OK: libhighs renamed correctly -> $renamed"
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-windows
+          path: dist/
 
       - name: Install wheel and run tests
         run: |
-          # Strip MSYS2 from PATH to verify the wheel is self-contained (no zlib1.dll etc. leaking in).
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*msys*' -and $_ -notlike '*mingw*' }) -join ';'
-          # Install wheel + rtc-tools together so uv resolves them as a unit and
-          # does not reinstate the editable install from a separate uv pip call.
-          uv pip install (Get-Item dist\*win_amd64*.whl).FullName rtc-tools
-          $rtcVersion = .venv\Scripts\python.exe -c "import rtctools; print(rtctools.__version__)"
+          uv pip install (Get-Item dist\*win_amd64*.whl).FullName rtc-tools --python 3.10 --system
+          $rtcVersion = python -c "import rtctools; print(rtctools.__version__)"
           git clone --depth 1 --branch $rtcVersion https://github.com/rtc-tools/rtc-tools.git rtc-tools-src
           $env:RTCTOOLS_EXAMPLE_DIR = "rtc-tools-src\examples\pumped_hydropower_system"
-          .venv\Scripts\python.exe -m pytest tests/ -v
+          python -m pip install pytest
+          python -m pytest tests/ -v
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-windows
-          path: dist\*win_amd64*.whl
+
+  tag-build:
+    needs: [resolve-versions, build-linux, build-windows, test-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
+    permissions:
+      contents: write
+    steps:
+      - name: Push HiGHS/CasADi tracking tag
+        # Marks that this exact HiGHS/CasADi pairing built and passed tests
+        # successfully at this commit. Independent of whether it ever gets
+        # published -- the release tag (vX.Y.Z) is only created after a
+        # successful PyPI publish, see the publish job below.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HIGHS_VERSION: ${{ needs.resolve-versions.outputs.highs_version }}
+          CASADI_VERSION: ${{ needs.resolve-versions.outputs.casadi_version }}
+        run: |
+          set -euo pipefail
+          tag="highs-${HIGHS_VERSION}-casadi-${CASADI_VERSION}"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}")
+          if [ "$code" = "200" ]; then
+            echo "Tag ${tag} already exists on remote; leaving it as-is."
+            exit 0
+          fi
+          resp=$(curl -sS -o /tmp/tag_resp.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -d "{\"ref\":\"refs/tags/${tag}\",\"sha\":\"${GITHUB_SHA}\"}")
+          if [ "${resp}" != "201" ]; then
+            echo "ERROR: failed to create tag ${tag} (HTTP ${resp}):"
+            cat /tmp/tag_resp.json
+            exit 1
+          fi
+          echo "Created tag ${tag}."
 
   publish:
-    needs: [build-linux, build-windows]
+    needs: [resolve-versions, tag-build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && needs.resolve-versions.outputs.release_version != '' && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
     environment:
       name: pypi
       url: https://pypi.org/p/rtctools-highs
     permissions:
       id-token: write  # required for OIDC trusted publisher
+      contents: write  # required to push the vX.Y.Z release tag after publishing
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -227,3 +461,25 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Push release version tag
+        # Only created after PyPI accepts the upload -- vX.Y.Z means
+        # "this is what's actually live on PyPI", not just "this built ok".
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.resolve-versions.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION}"
+          resp=$(curl -sS -o /tmp/tag_resp.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -d "{\"ref\":\"refs/tags/${tag}\",\"sha\":\"${GITHUB_SHA}\"}")
+          if [ "${resp}" != "201" ]; then
+            echo "ERROR: failed to create tag ${tag} (HTTP ${resp}):"
+            cat /tmp/tag_resp.json
+            exit 1
+          fi
+          echo "Created tag ${tag}."

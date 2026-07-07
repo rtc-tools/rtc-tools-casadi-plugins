@@ -21,10 +21,10 @@ try:
 except _PackageNotFoundError:
     __version__ = "unknown"
 
-# These are set at build time and reflect the versions this wheel was built against.
-# Single source of truth: pyproject.toml (via hatchling build hooks or manual bump).
-__highs_version__ = "1.14.0"
-__casadi_version__ = "3.7.2"
+# Set at build time to reflect the HiGHS version this wheel was compiled against.
+# TODO: read directly from the compiled plugin binary instead of a source literal
+# (tracked as follow-up work, to eliminate the last build-time-injected constant).
+__highs_version__ = "1.15.1"
 
 if sys.platform == "darwin":
     raise ImportError(
@@ -71,6 +71,9 @@ elif sys.platform == "linux":
         ) from _e
 
 import casadi  # noqa: E402
+
+# Never stale by construction: reflects whatever casadi package is actually installed.
+__casadi_version__ = casadi.__version__
 
 _current_parts = [p for p in casadi.GlobalOptions.getCasadiPath().split(os.pathsep) if p]
 _plugin_dir_str = str(_plugin_dir)

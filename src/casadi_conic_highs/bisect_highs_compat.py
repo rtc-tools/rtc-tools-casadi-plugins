@@ -19,7 +19,7 @@ Usage:
                                   [--work-dir PATH]
 
 Example:
-    python bisect_highs_compat.py --min-version 1.1.1 --max-version 1.14.0
+    python bisect_highs_compat.py --min-version 1.1.1 --max-version 1.15.1
 """
 
 import argparse
@@ -171,8 +171,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-version", default="1.1.1",
                         help="Oldest HiGHS version to consider (default: 1.1.1)")
-    parser.add_argument("--max-version", default="1.14.0",
-                        help="Newest HiGHS version to consider (default: 1.14.0)")
+    parser.add_argument("--max-version", default="1.15.1",
+                        help="Newest HiGHS version to consider (default: 1.15.1)")
     parser.add_argument("--casadi-src-dir", type=Path)
     parser.add_argument("--casadi-root", type=Path)
     parser.add_argument("--work-dir", type=Path,

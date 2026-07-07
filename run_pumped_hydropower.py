@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT   = Path(__file__).parent
-PLUGIN_DIR  = REPO_ROOT / "ci-work" / "plugin-install-highs1.14.0-casadi3.7.2" / "lib"
+PLUGIN_DIR  = REPO_ROOT / "ci-work" / "plugin-install-highs1.15.1-casadi3.7.2" / "lib"
 EXAMPLE_DIR = REPO_ROOT / "examples" / "pumped_hydropower_system"
 
 if sys.platform == "win32":

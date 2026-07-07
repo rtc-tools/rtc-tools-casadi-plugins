@@ -11,6 +11,19 @@
     actual build to build_highs_plugin.sh running inside MSYS2 MinGW64, after
     installing the matching HiGHS package from the MSYS2 package database.
 
+    WARNING -- NOT ABI-compatible with the official casadi PyPI wheel.
+    MSYS2's MinGW64 toolchain (GCC ~16.x at time of writing) does not match
+    the GCC 11.2.0 dockcross/MXE toolchain CasADi's own CI uses to build its
+    published Windows wheels. A plugin built by this script will only load
+    reliably against a CasADi also built/installed via MSYS2 -- NOT against
+    `pip install casadi`. This caused a real, silently-broken plugin DLL
+    earlier in this project's history (wrong GCC ABI, fell back to CasADi's
+    bundled HiGHS instead of failing loudly). The dockcross-based build in
+    `.github/workflows/build_highs.yml` (`build-windows` job) is the only
+    build path guaranteed to match the wheels most users actually install;
+    use this script only when developing/testing against a fully
+    MSYS2-based CasADi environment, never to produce a distributable wheel.
+
     Prerequisites:
 
       1. MSYS2 (https://www.msys2.org/)
@@ -28,7 +41,7 @@
 
 .PARAMETER HighsVersion
     HiGHS release to build against. Must match the version available in the
-    MSYS2 mingw-w64-x86_64-highs package. Defaults to 1.14.0.
+    MSYS2 mingw-w64-x86_64-highs package. Defaults to 1.15.1.
 
 .PARAMETER WorkDir
     Scratch directory for the build. Defaults to .\ci-work.
@@ -43,7 +56,7 @@
     .\build_highs_plugin.ps1 -WorkDir C:\tmp\ci-work
 #>
 param(
-    [string] $HighsVersion = "1.14.0",
+    [string] $HighsVersion = "1.15.1",
     [string] $WorkDir      = "",
     [string] $Msys2Root    = "C:\msys64"
 )

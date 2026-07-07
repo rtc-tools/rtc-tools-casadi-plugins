@@ -18,7 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HIGHS_VERSION="${1:-1.14.0}"
+HIGHS_VERSION="${1:-1.15.1}"
 
 # Always detect from the wheel — never hardcode — so the source clone matches.
 CASADI_VERSION="$(python -c 'import casadi; print(casadi.__version__)')"
