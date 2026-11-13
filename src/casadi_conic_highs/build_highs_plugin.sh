@@ -73,7 +73,9 @@ if [[ "${OS}" == "Linux" ]]; then
             -DBUILD_TESTING=OFF \
             -DBUILD_EXAMPLES=OFF \
             -DBUILD_SHARED_LIBS=OFF
-        cmake --build "${HIGHS_BUILD_DIR}" --config Release --parallel
+        # Bounded job count: a bare --parallel is unlimited with Makefiles and
+        # OOM-kills the runner on HiGHS 1.16.
+        cmake --build "${HIGHS_BUILD_DIR}" --config Release --parallel "$(nproc)"
         cmake --install "${HIGHS_BUILD_DIR}" --config Release
         # Verify ABI: solutionStatusToString must not have [abi:cxx11] mangling.
         # If it does, CMAKE_CXX_FLAGS was silently dropped and the wheel will fail
