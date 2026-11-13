@@ -13,13 +13,17 @@ on:
         required: true
         default: "3.7.2"
       release_version:
-        description: "Package release version, PEP 440 (e.g. 0.1.4). Leave empty for a test build (no tags, no publish)."
+        description: "Package release version, PEP 440 (e.g. 0.1.4). Leave empty for a test build (no release tag, no publish; a run from main still pushes the highs-X-casadi-Y tracking tag)."
         required: false
       publish:
         description: "Publish to PyPI after a successful build (still requires environment reviewer approval)"
         required: false
         type: boolean
         default: false
+
+# Least privilege by default; tag-build and publish raise it per job.
+permissions:
+  contents: read
 
 jobs:
   resolve-versions:
@@ -37,8 +41,19 @@ jobs:
           HIGHS_VERSION_IN: ${{ github.event.inputs.highs_version }}
           CASADI_VERSION_IN: ${{ github.event.inputs.casadi_version }}
           RELEASE_VERSION_IN: ${{ github.event.inputs.release_version }}
+          PUBLISH_IN: ${{ github.event.inputs.publish }}
         run: |
           set -euo pipefail
+          # tag-build and publish only run on main; fail loudly instead of
+          # finishing green with the release silently skipped.
+          if [ "${PUBLISH_IN:-}" = "true" ] && [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "ERROR: publish=true requires dispatching from main (got ${GITHUB_REF})." >&2
+            exit 1
+          fi
+          if [ "${PUBLISH_IN:-}" = "true" ] && [ -z "${RELEASE_VERSION_IN:-}" ]; then
+            echo "ERROR: publish=true requires release_version." >&2
+            exit 1
+          fi
           HIGHS_VERSION="${HIGHS_VERSION_IN:-1.15.1}"
           CASADI_VERSION="${CASADI_VERSION_IN:-3.7.2}"
           AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -50,7 +65,7 @@ jobs:
           # refs/tags/v1.16 would also "match" v1.16.0.
           tag_exists() {
             local code
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+            code=$(curl -sS --retry 3 -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
               "https://api.github.com/repos/$1/git/ref/tags/$2" || true)
             case "$code" in
               200) return 0 ;;
@@ -118,6 +133,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Install system dependencies
         # patchelf: required by auditwheel to rewrite RPATHs in the repaired wheel
@@ -238,6 +254,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Patch version pins from resolved inputs
         run: |
@@ -408,6 +425,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -434,7 +453,7 @@ jobs:
   tag-build:
     needs: [resolve-versions, build-linux, build-windows, test-windows]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
     permissions:
       contents: write
     steps:
@@ -450,19 +469,28 @@ jobs:
         run: |
           set -euo pipefail
           tag="highs-${HIGHS_VERSION}-casadi-${CASADI_VERSION}"
-          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+          code=$(curl -sS --retry 3 -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")
-          if [ "$code" = "200" ]; then
-            echo "Tag ${tag} already exists on remote; leaving it as-is."
-            exit 0
-          fi
-          resp=$(curl -sS -o /tmp/tag_resp.json -w "%{http_code}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" || true)
+          case "$code" in
+            200)
+              echo "Tag ${tag} already exists on remote; leaving it as-is."
+              exit 0 ;;
+            404) ;;  # absent: create it below
+            *)
+              echo "ERROR: GitHub API returned HTTP ${code} checking tag ${tag}." >&2
+              exit 1 ;;
+          esac
+          resp=$(curl -sS --retry 3 -o /tmp/tag_resp.json -w "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs" \
-            -d "{\"ref\":\"refs/tags/${tag}\",\"sha\":\"${GITHUB_SHA}\"}")
+            -d "{\"ref\":\"refs/tags/${tag}\",\"sha\":\"${GITHUB_SHA}\"}" || true)
+          if [ "${resp}" = "422" ] && grep -q "Reference already exists" /tmp/tag_resp.json; then
+            echo "Tag ${tag} was created concurrently; leaving it as-is."
+            exit 0
+          fi
           if [ "${resp}" != "201" ]; then
             echo "ERROR: failed to create tag ${tag} (HTTP ${resp}):"
             cat /tmp/tag_resp.json
@@ -473,7 +501,7 @@ jobs:
   publish:
     needs: [resolve-versions, tag-build]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && needs.resolve-versions.outputs.release_version != '' && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true' && needs.resolve-versions.outputs.release_version != '' && github.repository == 'rtc-tools/rtc-tools-casadi-plugins'
     environment:
       name: pypi
       url: https://pypi.org/p/rtctools-highs
