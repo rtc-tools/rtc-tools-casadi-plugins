@@ -4,6 +4,8 @@ Verifies that the HiGHS solver produces numerically correct solutions and that
 the correct HiGHS version is loaded from the installed wheel.
 """
 import re
+import subprocess
+import sys
 import time
 
 import casadi as ca
@@ -24,20 +26,21 @@ class TestPluginIntegrity:
     """Checks that the correct HiGHS version is loaded, produces an optimal
     solution, and completes in reasonable time."""
 
-    def test_highs_version(self, tmp_path):
-        log_file = str(tmp_path / "highs.log")
-        x = ca.MX.sym("x")
-        solver = ca.qpsol(
-            "integrity_v",
-            "highs",
-            {"x": x, "f": (x - 1) ** 2, "g": x},
-            {"highs": {"output_flag": True, "log_file": log_file}},
+    def test_highs_version(self):
+        # HiGHS prints its "Running HiGHS <version>" banner once per process,
+        # so run the solve in a fresh interpreter to be independent of test order.
+        code = (
+            "import casadi as ca, rtctools_highs\n"
+            "x = ca.MX.sym('x')\n"
+            "s = ca.qpsol('v', 'highs', {'x': x, 'f': (x - 1) ** 2, 'g': x},"
+            " {'highs': {'output_flag': True}})\n"
+            "s(lbx=-10, ubx=10, lbg=0, ubg=2)\n"
         )
-        solver(lbx=-10, ubx=10, lbg=0, ubg=2)
-
-        log = (tmp_path / "highs.log").read_text()
-        match = re.search(r"Running HiGHS (\S+)", log)
-        assert match, f"HiGHS version line not found in log:\n{log}"
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        )
+        match = re.search(r"Running HiGHS (\S+)", proc.stdout)
+        assert match, f"HiGHS version line not found in output:\n{proc.stdout}"
         assert match.group(1) == rtctools_highs.__highs_version__
 
     def test_optimality(self, highs_solver):
