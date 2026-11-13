@@ -55,6 +55,9 @@ source = "vcs"
 # commit by CI to record the exact HiGHS/CasADi pairing; it must be ignored
 # here so it never gets picked up as a version source.
 tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)$"
+# Restrict git describe to release tags; otherwise the nearest tag can be a
+# tracking tag, which tag_regex rejects.
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v[0-9]*.[0-9]*.[0-9]*", "--exclude", "v*[!0-9.]*", "--exclude", "v*.*.*.*"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rtctools_highs"]

@@ -266,6 +266,9 @@ jobs:
           python3 -m zipfile -e casadi-win-wheel/casadi.whl casadi-win-wheel/extracted
 
       - name: Cross-compile HiGHS
+        # _WIN32_WINNT=0x0601 (Windows 7) is needed for GetProcessGroupAffinity /
+        # GetLogicalProcessorInformationEx, which the MXE headers hide by default.
+        # The plugin build below uses the same value.
         run: |
           set -euo pipefail
           mkdir -p highs-src/build-dockcross
@@ -277,6 +280,8 @@ jobs:
               cmake -G Ninja -S . -B build-dockcross \
                 -DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE \
                 -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_FLAGS_INIT=-D_WIN32_WINNT=0x0601 \
+                -DCMAKE_CXX_FLAGS_INIT=-D_WIN32_WINNT=0x0601 \
                 -DFAST_BUILD=ON -DBUILD_SHARED_LIBS=OFF -DZLIB=OFF -DHIPO=OFF \
                 -DCMAKE_INSTALL_PREFIX=/work/install-dockcross
               ninja -C build-dockcross -j"$(nproc)"
@@ -303,6 +308,8 @@ jobs:
               cmake -G Ninja -S /src -B /build \
                 -DCMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE \
                 -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_FLAGS_INIT=-D_WIN32_WINNT=0x0601 \
+                -DCMAKE_CXX_FLAGS_INIT=-D_WIN32_WINNT=0x0601 \
                 -DHIGHS_ROOT=/highs \
                 -DCASADI_ROOT=/site-packages/casadi \
                 -DCASADI_SRC_DIR=/casadi-src \
