@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       highs_version:
-        description: "HiGHS version to build against (e.g. 1.15.1)"
+        description: "HiGHS version to build against (e.g. 1.15.1; X.Y is normalised to X.Y.0 if only that tag exists)"
         required: true
         default: "1.15.1"
       casadi_version:
@@ -43,28 +43,49 @@ jobs:
           CASADI_VERSION="${CASADI_VERSION_IN:-3.7.2}"
           AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 
+          # tag_exists REPO TAG: returns 0 if the tag exists, 1 if GitHub answers
+          # 404, and aborts on any other status (rate limit, auth, 5xx, network)
+          # so API failures are never reported as "tag not found".
+          # Uses git/ref (exact match); git/refs is a prefix match, so
+          # refs/tags/v1.16 would also "match" v1.16.0.
+          tag_exists() {
+            local code
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
+              "https://api.github.com/repos/$1/git/ref/tags/$2" || true)
+            case "$code" in
+              200) return 0 ;;
+              404) return 1 ;;
+              *) echo "ERROR: GitHub API returned HTTP ${code} checking tag $2 in $1." >&2
+                 exit 1 ;;
+            esac
+          }
+
+          # Tolerate a leading "v" and surrounding whitespace in the inputs.
+          HIGHS_VERSION="$(echo "${HIGHS_VERSION}" | tr -d '[:space:]')"
+          HIGHS_VERSION="${HIGHS_VERSION#v}"
+
           echo "==> Validating HiGHS tag v${HIGHS_VERSION} exists (ERGO-Code/HiGHS)..."
-          code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
-            "https://api.github.com/repos/ERGO-Code/HiGHS/git/refs/tags/v${HIGHS_VERSION}")
-          if [ "$code" != "200" ]; then
-            echo "ERROR: HiGHS tag v${HIGHS_VERSION} not found (HTTP $code)." >&2
-            exit 1
+          if ! tag_exists ERGO-Code/HiGHS "v${HIGHS_VERSION}"; then
+            # HiGHS tags 1.16 as v1.16.0; accept X.Y and normalise to X.Y.0.
+            # The normalised version feeds cache keys and the tracking tag name.
+            if [[ "${HIGHS_VERSION}" =~ ^[0-9]+\.[0-9]+$ ]] \
+                && tag_exists ERGO-Code/HiGHS "v${HIGHS_VERSION}.0"; then
+              HIGHS_VERSION="${HIGHS_VERSION}.0"
+              echo "Normalised HiGHS version to ${HIGHS_VERSION}"
+            else
+              echo "ERROR: HiGHS tag v${HIGHS_VERSION} not found." >&2
+              exit 1
+            fi
           fi
 
           echo "==> Validating CasADi tag for ${CASADI_VERSION} exists (casadi/casadi)..."
-          code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
-            "https://api.github.com/repos/casadi/casadi/git/refs/tags/${CASADI_VERSION}")
-          if [ "$code" = "200" ]; then
+          if tag_exists casadi/casadi "${CASADI_VERSION}"; then
             casadi_tag="${CASADI_VERSION}"
+          elif tag_exists casadi/casadi "v${CASADI_VERSION}"; then
+            casadi_tag="v${CASADI_VERSION}"
           else
-            code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
-              "https://api.github.com/repos/casadi/casadi/git/refs/tags/v${CASADI_VERSION}")
-            if [ "$code" = "200" ]; then
-              casadi_tag="v${CASADI_VERSION}"
-            else
-              echo "ERROR: CasADi tag ${CASADI_VERSION} (or v${CASADI_VERSION}) not found." >&2
-              exit 1
-            fi
+            echo "ERROR: CasADi tag ${CASADI_VERSION} (or v${CASADI_VERSION}) not found." >&2
+            exit 1
           fi
           echo "Resolved CasADi tag: ${casadi_tag}"
           echo "casadi_tag=${casadi_tag}" >> "$GITHUB_OUTPUT"
@@ -74,9 +95,7 @@ jobs:
               echo "ERROR: release_version '${RELEASE_VERSION_IN}' is not a plain X.Y.Z PEP 440 version." >&2
               exit 1
             fi
-            if curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" \
-                "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/v${RELEASE_VERSION_IN}" \
-                | grep -q "^200$"; then
+            if tag_exists "${GITHUB_REPOSITORY}" "v${RELEASE_VERSION_IN}"; then
               echo "ERROR: release tag v${RELEASE_VERSION_IN} already exists." >&2
               exit 1
             fi
@@ -426,7 +445,7 @@ jobs:
           tag="highs-${HIGHS_VERSION}-casadi-${CASADI_VERSION}"
           code=$(curl -sS -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}")
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")
           if [ "$code" = "200" ]; then
             echo "Tag ${tag} already exists on remote; leaving it as-is."
             exit 0
