@@ -47,6 +47,10 @@ foreach(var CASADI_SRC_DIR HIGHS_ROOT)
     endif()
 endforeach()
 
+# find_package(CONFIG) caches <pkg>_DIR and reuses it on re-configure, so a reused build
+# directory would keep resolving the old CASADI_ROOT/HIGHS_ROOT. Drop the entries first.
+unset(casadi_DIR CACHE)
+unset(highs_DIR CACHE)
 find_package(casadi CONFIG REQUIRED PATHS "${CASADI_ROOT}/cmake" NO_DEFAULT_PATH)
 # The macOS static release tarball bundles libopenblas.a and its own OpenBLAS
 # cmake config. highs-config.cmake calls find_dependency(BLAS); pre-satisfy it
@@ -136,11 +140,32 @@ target_compile_definitions(casadi_conic_highs PRIVATE
 )
 
 if(UNIX AND NOT APPLE)
-    # The CasADi wheel was built with the pre-GCC5 C++ ABI (_GLIBCXX_USE_CXX11_ABI=0).
+    # The plugin must use the same libstdc++ ABI as the libcasadi it loads into.
+    #   CasADi 3.7.x (and every manylinux2014 wheel): old ABI, CXX11_ABI=0.
+    #   CasADi 3.8.x manylinux_2_28 wheels:           new ABI, CXX11_ABI=1.
     # highs_interface.cpp calls Highs::solutionStatusToString which returns std::string;
-    # without this flag our .so defines the B5cxx11 mangling but casadi's runtime
-    # expects the old mangling (_ZNK5Highs22solutionStatusToStringEi). Match the ABI.
-    target_compile_definitions(casadi_conic_highs PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+    # a mismatch gives the wrong mangling (B5cxx11 or not) and an "undefined symbol"
+    # at dlopen. CXX11_ABI is passed in by build_highs_plugin.sh.
+    if(NOT DEFINED CXX11_ABI OR NOT CXX11_ABI MATCHES "^[01]$")
+        message(FATAL_ERROR "CXX11_ABI must be 0 or 1 (got '${CXX11_ABI}'). "
+            "Pass -DCXX11_ABI=0 for CasADi 3.7.x, -DCXX11_ABI=1 for CasADi 3.8+.")
+    endif()
+    # casadi-config.cmake in every wheel still carries _GLIBCXX_USE_CXX11_ABI=0 on the
+    # casadi::casadi interface, whatever the wheel's real ABI. Remove it so it cannot
+    # contradict the value set below.
+    get_target_property(_casadi_defs casadi::casadi INTERFACE_COMPILE_DEFINITIONS)
+    if(_casadi_defs)
+        list(FILTER _casadi_defs EXCLUDE REGEX "^_GLIBCXX_USE_CXX11_ABI=")
+        set_target_properties(casadi::casadi PROPERTIES
+            INTERFACE_COMPILE_DEFINITIONS "${_casadi_defs}")
+    endif()
+    get_target_property(_casadi_opts casadi::casadi INTERFACE_COMPILE_OPTIONS)
+    if(_casadi_opts)
+        list(FILTER _casadi_opts EXCLUDE REGEX "^-D_GLIBCXX_USE_CXX11_ABI=")
+        set_target_properties(casadi::casadi PROPERTIES
+            INTERFACE_COMPILE_OPTIONS "${_casadi_opts}")
+    endif()
+    target_compile_definitions(casadi_conic_highs PRIVATE _GLIBCXX_USE_CXX11_ABI=${CXX11_ABI})
 endif()
 
 # Non-FAST_BUILD exports 'libhighs'; FAST_BUILD exports 'highs::highs'.
@@ -175,7 +200,7 @@ if(APPLE)
     set_target_properties(casadi_conic_highs PROPERTIES INSTALL_RPATH "@loader_path")
 elseif(UNIX)
     # $ORIGIN: plugin's own dir (for any future sibling .so)
-    # $ORIGIN/../casadi: CasADi wheel install dir (provides libcasadi.so.3.7)
+    # $ORIGIN/../casadi: CasADi wheel install dir (provides libcasadi.so.3.x)
     set_target_properties(casadi_conic_highs PROPERTIES INSTALL_RPATH "$ORIGIN:$ORIGIN/../casadi")
 endif()
 

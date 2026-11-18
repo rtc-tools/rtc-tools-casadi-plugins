@@ -64,7 +64,7 @@ elif sys.platform == "linux":
     except OSError as _e:
         raise ImportError(
             f"rtctools_highs: cannot load {_plugin_so}: {_e}. "
-            "A transitive dependency (libcasadi.so.3.7, libz.so.1, libgomp.so.1, "
+            "A transitive dependency (libcasadi.so.3.x, libz.so.1, libgomp.so.1, "
             "libstdc++, etc.) could not be resolved. "
             "Install the matching casadi wheel first, or check that all system "
             "libraries required by the wheel are present."

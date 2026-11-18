@@ -32,6 +32,8 @@ jobs:
       highs_version: ${{ steps.resolve.outputs.highs_version }}
       casadi_version: ${{ steps.resolve.outputs.casadi_version }}
       casadi_tag: ${{ steps.resolve.outputs.casadi_tag }}
+      casadi_line: ${{ steps.resolve.outputs.casadi_line }}
+      cxx11_abi: ${{ steps.resolve.outputs.cxx11_abi }}
       release_version: ${{ steps.resolve.outputs.release_version }}
     steps:
       - name: Resolve and validate HiGHS/CasADi versions
@@ -79,6 +81,33 @@ jobs:
           HIGHS_VERSION="$(echo "${HIGHS_VERSION}" | tr -d '[:space:]')"
           HIGHS_VERSION="${HIGHS_VERSION#v}"
 
+          # Both versions end up in sed expressions, URLs and cache keys in later
+          # jobs, so accept nothing but plain numeric versions.
+          CASADI_VERSION="$(echo "${CASADI_VERSION}" | tr -d '[:space:]')"
+          if ! [[ "${CASADI_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: casadi_version '${CASADI_VERSION}' is not a plain X.Y.Z version." >&2
+            exit 1
+          fi
+          if ! [[ "${HIGHS_VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "ERROR: highs_version '${HIGHS_VERSION}' is not a plain X.Y or X.Y.Z version." >&2
+            exit 1
+          fi
+
+          # Release lines. Each CasADi line maps to (libstdc++ ABI of its manylinux
+          # wheel, rtctools-highs release minor). The ABI feeds the Linux build and
+          # the minor guards release_version so a version number never implies the
+          # wrong CasADi line. A new CasADi line is an explicit new case here;
+          # unknown lines fail closed.
+          casadi_line="${CASADI_VERSION%.*}"
+          case "${casadi_line}" in
+            3.7) cxx11_abi=0; release_minor=1 ;;
+            3.8) cxx11_abi=1; release_minor=2 ;;
+            *) echo "ERROR: CasADi line ${casadi_line} (from ${CASADI_VERSION}) is not supported; supported lines: 3.7, 3.8." >&2
+               exit 1 ;;
+          esac
+          echo "casadi_line=${casadi_line}" >> "$GITHUB_OUTPUT"
+          echo "cxx11_abi=${cxx11_abi}" >> "$GITHUB_OUTPUT"
+
           echo "==> Validating HiGHS tag v${HIGHS_VERSION} exists (ERGO-Code/HiGHS)..."
           if ! tag_exists ERGO-Code/HiGHS "v${HIGHS_VERSION}"; then
             # HiGHS tags 1.16 as v1.16.0; accept X.Y and normalise to X.Y.0.
@@ -110,6 +139,11 @@ jobs:
               echo "ERROR: release_version '${RELEASE_VERSION_IN}' is not a plain X.Y.Z PEP 440 version." >&2
               exit 1
             fi
+            release_series="$(echo "${RELEASE_VERSION_IN}" | cut -d. -f1,2)"
+            if [ "${release_series}" != "0.${release_minor}" ]; then
+              echo "ERROR: release_version ${RELEASE_VERSION_IN} does not belong to CasADi ${casadi_line}; use 0.${release_minor}.x." >&2
+              exit 1
+            fi
             if tag_exists "${GITHUB_REPOSITORY}" "v${RELEASE_VERSION_IN}"; then
               echo "ERROR: release tag v${RELEASE_VERSION_IN} already exists." >&2
               exit 1
@@ -127,6 +161,8 @@ jobs:
     env:
       HIGHS_VERSION: ${{ needs.resolve-versions.outputs.highs_version }}
       CASADI_VERSION: ${{ needs.resolve-versions.outputs.casadi_version }}
+      CASADI_LINE: ${{ needs.resolve-versions.outputs.casadi_line }}
+      CXX11_ABI: ${{ needs.resolve-versions.outputs.cxx11_abi }}
       SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.resolve-versions.outputs.release_version }}
     steps:
       - uses: actions/checkout@v4
@@ -162,15 +198,15 @@ jobs:
       - name: Cache HiGHS build
         uses: actions/cache@v4
         with:
-          path: ci-work/highs-${{ env.HIGHS_VERSION }}
-          key: highs-${{ env.HIGHS_VERSION }}-linux-${{ runner.os }}-${{ hashFiles('src/casadi_conic_highs/build_highs_plugin.sh') }}
+          path: ci-work/highs-${{ env.HIGHS_VERSION }}-abi${{ env.CXX11_ABI }}
+          key: highs-${{ env.HIGHS_VERSION }}-abi${{ env.CXX11_ABI }}-linux-${{ runner.os }}-${{ hashFiles('src/casadi_conic_highs/build_highs_plugin.sh') }}
 
       - name: Cache repaired wheel
         id: cache-wheel
         uses: actions/cache@v4
         with:
           path: dist
-          key: wheel-linux-${{ hashFiles('src/casadi_conic_highs/**', 'src/rtctools_highs/**', 'pyproject.toml', '.github/workflows/build_highs.yml') }}-highs-${{ env.HIGHS_VERSION }}-casadi-${{ env.CASADI_VERSION }}-v2
+          key: wheel-linux-${{ hashFiles('src/casadi_conic_highs/**', 'src/rtctools_highs/**', 'pyproject.toml', '.github/workflows/build_highs.yml') }}-highs-${{ env.HIGHS_VERSION }}-casadi-${{ env.CASADI_VERSION }}-abi${{ env.CXX11_ABI }}-v3
 
       - name: Build HiGHS plugin
         if: steps.cache-wheel.outputs.cache-hit != 'true'
@@ -199,7 +235,9 @@ jobs:
 
       - name: Repair wheel with auditwheel
         if: steps.cache-wheel.outputs.cache-hit != 'true'
-        # --exclude libcasadi.so.3.7: provided by the casadi wheel; must not be vendored.
+        # --exclude libcasadi.so.*: provided by the casadi wheel; must not be vendored.
+        #   A glob, because the soname does not follow the release line (the 3.8.2 wheel
+        #   still ships libcasadi.so.3.7).
         # --exclude libhighs.so / libhighs.so.*: guard against a future dynamic HiGHS Linux
         #   release (static-only today) being pre-staged and bundled unrenamed. Both the
         #   unversioned name and versioned SONAMEs (e.g. libhighs.so.1) are excluded.
@@ -207,11 +245,29 @@ jobs:
         #   Currently a no-op because the build uses a static-only HiGHS release.
         run: |
           uv run auditwheel repair --plat manylinux_2_28_x86_64 \
-            --exclude libcasadi.so.3.7 \
+            --exclude "libcasadi.so.*" \
             --exclude libhighs.so \
             --exclude "libhighs.so.*" \
             --wheel-dir dist/ dist/*.whl
           rm -f dist/*-linux_x86_64.whl
+
+      - name: Verify plugin libstdc++ ABI matches the CasADi line
+        if: steps.cache-wheel.outputs.cache-hit != 'true'
+        # [abi:cxx11] symbols in the plugin's undefined/defined std::string API mean
+        # the new ABI. The result must equal cxx11_abi from resolve-versions
+        # (0 for CasADi 3.7.x, 1 for 3.8+), or the plugin fails to load.
+        run: |
+          set -euo pipefail
+          so=$(ls src/rtctools_highs/libcasadi_conic_highs*.so | head -n1)
+          # Capture first: grep -q closing the pipe early gives nm/c++filt SIGPIPE (141)
+          # which pipefail would turn into a false "no match".
+          syms=$(nm -D "$so" | c++filt)
+          if grep -qE "\[abi:cxx11\]|std::__cxx11::basic_string" <<<"$syms"; then built=1; else built=0; fi
+          if [ "$built" != "${CXX11_ABI}" ]; then
+            echo "ERROR: plugin has CXX11_ABI=${built}, expected ${CXX11_ABI} for CasADi ${CASADI_LINE}." >&2
+            exit 1
+          fi
+          echo "OK: plugin ABI (${built}) matches CasADi ${CASADI_LINE}."
 
       - name: Verify wheel contents
         # Guard: no-op today (static HiGHS), catches a missed --exclude if HiGHS ever ships a .so.
@@ -273,13 +329,26 @@ jobs:
 
       - name: Download CasADi Windows wheel (headers/cmake config/import libs only)
         # Any cp3xx tag works: the plugin links against C++ symbols, not the
-        # Python C API. cp312 chosen arbitrarily as a stable, always-published tag.
+        # Python C API. Take the first available tag from the preference list
+        # (3.7.x publishes cp312; 3.8.x publishes only cp310 and cp311-abi3).
+        # The download is checked against the sha256 PyPI publishes for it.
         run: |
           set -euo pipefail
-          url=$(curl -sS "https://pypi.org/pypi/casadi/${CASADI_VERSION}/json" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print([u['url'] for u in d['urls'] if u['filename'].endswith('cp312-none-win_amd64.whl')][0])")
+          curl -sS --fail --retry 3 "https://pypi.org/pypi/casadi/${CASADI_VERSION}/json" -o casadi-pypi.json
+          read -r url sha256 < <(python3 - <<'PY'
+          import json
+          files = {u["filename"]: u for u in json.load(open("casadi-pypi.json"))["urls"]}
+          for tag in ("cp312-none-win_amd64", "cp311-abi3-win_amd64", "cp310-none-win_amd64"):
+              for name, u in files.items():
+                  if name.endswith(tag + ".whl"):
+                      print(u["url"], u["digests"]["sha256"])
+                      raise SystemExit(0)
+          raise SystemExit("no usable CasADi Windows wheel on PyPI")
+          PY
+          )
           mkdir -p casadi-win-wheel
-          curl -sSL -o casadi-win-wheel/casadi.whl "$url"
+          curl -sSL --fail --retry 3 -o casadi-win-wheel/casadi.whl "$url"
+          echo "${sha256}  casadi-win-wheel/casadi.whl" | sha256sum -c -
           python3 -m zipfile -e casadi-win-wheel/casadi.whl casadi-win-wheel/extracted
 
       - name: Cross-compile HiGHS
